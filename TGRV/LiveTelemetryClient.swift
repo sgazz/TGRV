@@ -123,7 +123,8 @@ final class LiveTelemetryClient {
         sampleCount: Int,
         deviceType: String,
         inputType: String,
-        exportExpected: Bool
+        exportExpected: Bool,
+        pinMetadata: TouchPinMetadata? = nil
     ) {
         let message = TouchTelemetryMessage.touchEvent(
             sessionId: event.sessionId,
@@ -144,7 +145,52 @@ final class LiveTelemetryClient {
             exportExpected: exportExpected,
             sampleKind: sampleKind,
             sampleIndex: sampleIndex,
-            sampleCount: sampleCount
+            sampleCount: sampleCount,
+            pinMetadata: pinMetadata
+        )
+        enqueue(message)
+    }
+
+    func sendPINKeypadEvent(
+        sessionId: UUID,
+        touchId: UUID,
+        timestamp: Double,
+        phase: TouchPhase,
+        x: Double,
+        y: Double,
+        force: Double?,
+        maximumPossibleForce: Double,
+        majorRadius: Double,
+        altitudeAngle: Double?,
+        azimuthAngle: Double?,
+        coalescedCount: Int,
+        predictedCount: Int,
+        deviceType: String,
+        inputType: String,
+        exportExpected: Bool,
+        pinMetadata: TouchPinMetadata
+    ) {
+        let message = TouchTelemetryMessage.touchEvent(
+            sessionId: sessionId,
+            touchId: touchId,
+            timestamp: timestamp,
+            phase: phase,
+            x: x,
+            y: y,
+            force: force,
+            maximumPossibleForce: maximumPossibleForce,
+            majorRadius: majorRadius,
+            altitudeAngle: altitudeAngle,
+            azimuthAngle: azimuthAngle,
+            coalescedCount: coalescedCount,
+            predictedCount: predictedCount,
+            deviceType: deviceType,
+            inputType: inputType,
+            exportExpected: exportExpected,
+            sampleKind: .live,
+            sampleIndex: pinMetadata.digitIndex ?? 0,
+            sampleCount: 1,
+            pinMetadata: pinMetadata
         )
         enqueue(message)
     }

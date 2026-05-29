@@ -5,13 +5,28 @@ protocol TouchCaptureViewDelegate: AnyObject {
     func captureView(_ view: TouchCaptureSurfaceView, didReceive touches: Set<UITouch>, phase: TouchPhase, event: UIEvent?)
 }
 
-final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelegate {
+protocol PINKeypadButtonDelegate: AnyObject {
+    func pinKeypadButton(_ button: PINKeypadButton, didFinishTouch touch: UITouch, phase: TouchPhase, event: UIEvent?)
+}
+
+enum CaptureInteractionMode: Int {
+    case freeTouch = 0
+    case pinKeypad = 1
+}
+
+final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelegate, PINKeypadButtonDelegate {
     private let captureSurfaceView = TouchCaptureSurfaceView()
     private let hudOverlayView = UIView()
     private let topBarView = UIView()
+    private let modeBarView = UIView()
+    private let pinPanelView = UIView()
     private let debugPanelOverlayView = UIView()
 
     private let statusLabel = UILabel()
+    private let modeSegmentedControl = UISegmentedControl(items: ["Free Touch", "PIN Keypad"])
+    private let pinStatusLabel = UILabel()
+    private let pinVisibilityButton = UIButton(type: .system)
+    private let pinTrialLabel = UILabel()
     private let telemetryHostField = UITextField()
     private let telemetryPortField = UITextField()
     private let telemetryWarningLabel = UILabel()
@@ -35,12 +50,20 @@ final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelega
     private var saveButton: UIButton?
     private var connectionTestButton: UIButton?
     private var debugToggleButton: UIButton?
+    private var pinButtons: [PINKeypadButton] = []
     private var telemetryTimer: Timer?
     private let pathMonitor = NWPathMonitor()
     private let pathMonitorQueue = DispatchQueue(label: "com.gazza.tgrv.path-monitor")
     private var currentPathStatus: NWPath.Status = .requiresConnection
     private var usesWiFi = false
     private var isDebugPanelVisible = false
+    private var interactionMode: CaptureInteractionMode = .freeTouch
+    private var pinSequenceId = UUID()
+    private var enteredPin = ""
+    private var expectedPin: String?
+    private var pinTrialIndex: Int?
+    private var pinTrialTotal: Int?
+    private var pinDisplayIsMasked = true
 
     override func loadView() {
         view = UIView()
@@ -54,6 +77,8 @@ final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelega
 
         configureHierarchy()
         configureTopBar()
+        configureModeBar()
+        configurePINPanel()
         configureDebugPanel()
         configureTelemetryState()
 
@@ -92,6 +117,10 @@ final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelega
         super.viewDidLayoutSubviews()
         view.bringSubviewToFront(hudOverlayView)
         view.bringSubviewToFront(topBarView)
+        view.bringSubviewToFront(modeBarView)
+        if !pinPanelView.isHidden {
+            view.bringSubviewToFront(pinPanelView)
+        }
         if isDebugPanelVisible {
             view.bringSubviewToFront(debugPanelOverlayView)
         }
@@ -101,6 +130,10 @@ final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelega
         let totalEvents = TouchLogger.shared.recordTouches(touches, phase: phase, in: view, event: event)
         statusLabel.text = statusHUDText(eventCountOverride: totalEvents)
         refreshTelemetryStatus()
+    }
+
+    func pinKeypadButton(_ button: PINKeypadButton, didFinishTouch touch: UITouch, phase: TouchPhase, event: UIEvent?) {
+        handlePINButtonTap(button, touch: touch, phase: phase, event: event)
     }
 
     @objc private func handleDoubleTap() {
@@ -216,6 +249,23 @@ final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelega
         topBarView.clipsToBounds = true
         view.addSubview(topBarView)
 
+        modeBarView.translatesAutoresizingMaskIntoConstraints = false
+        modeBarView.backgroundColor = UIColor(white: 0.0, alpha: 0.55)
+        modeBarView.layer.cornerRadius = 10
+        modeBarView.clipsToBounds = true
+        view.addSubview(modeBarView)
+
+        pinPanelView.translatesAutoresizingMaskIntoConstraints = false
+        pinPanelView.backgroundColor = UIColor(white: 0.06, alpha: 0.98)
+        pinPanelView.layer.cornerRadius = 14
+        pinPanelView.layer.shadowColor = UIColor.black.cgColor
+        pinPanelView.layer.shadowOpacity = 0.30
+        pinPanelView.layer.shadowRadius = 12
+        pinPanelView.layer.shadowOffset = CGSize(width: 0, height: -4)
+        pinPanelView.clipsToBounds = false
+        pinPanelView.isHidden = true
+        view.addSubview(pinPanelView)
+
         debugPanelOverlayView.translatesAutoresizingMaskIntoConstraints = false
         debugPanelOverlayView.backgroundColor = UIColor(white: 0.08, alpha: 0.98)
         debugPanelOverlayView.layer.cornerRadius = 12
@@ -248,7 +298,17 @@ final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelega
             topBarView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
             topBarView.heightAnchor.constraint(equalToConstant: 44),
 
-            debugPanelOverlayView.topAnchor.constraint(equalTo: topBarView.bottomAnchor, constant: 8),
+            modeBarView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 10),
+            modeBarView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -10),
+            modeBarView.topAnchor.constraint(equalTo: topBarView.bottomAnchor, constant: 8),
+            modeBarView.heightAnchor.constraint(equalToConstant: 36),
+
+            pinPanelView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 10),
+            pinPanelView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -10),
+            pinPanelView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
+            pinPanelView.heightAnchor.constraint(equalToConstant: 300),
+
+            debugPanelOverlayView.topAnchor.constraint(equalTo: modeBarView.bottomAnchor, constant: 8),
             debugPanelOverlayView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
             debugPanelOverlayView.widthAnchor.constraint(equalToConstant: 340),
             debugPanelOverlayView.bottomAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
@@ -298,6 +358,116 @@ final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelega
             buttonsRow.trailingAnchor.constraint(equalTo: topBarView.trailingAnchor, constant: -12),
             buttonsRow.centerYAnchor.constraint(equalTo: topBarView.centerYAnchor),
         ])
+    }
+
+    private func configureModeBar() {
+        modeSegmentedControl.selectedSegmentIndex = interactionMode.rawValue
+        modeSegmentedControl.selectedSegmentTintColor = .systemBlue
+        modeSegmentedControl.setTitleTextAttributes([.foregroundColor: UIColor.white], for: .selected)
+        modeSegmentedControl.setTitleTextAttributes([.foregroundColor: UIColor.label], for: .normal)
+        modeSegmentedControl.addTarget(self, action: #selector(modeSelectionChanged), for: .valueChanged)
+        modeSegmentedControl.translatesAutoresizingMaskIntoConstraints = false
+
+        let modeLabel = UILabel()
+        modeLabel.text = "Mode"
+        modeLabel.textColor = .white
+        modeLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+
+        modeBarView.addSubview(modeLabel)
+        modeBarView.addSubview(modeSegmentedControl)
+        modeLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        NSLayoutConstraint.activate([
+            modeLabel.leadingAnchor.constraint(equalTo: modeBarView.leadingAnchor, constant: 12),
+            modeLabel.centerYAnchor.constraint(equalTo: modeBarView.centerYAnchor),
+
+            modeSegmentedControl.leadingAnchor.constraint(greaterThanOrEqualTo: modeLabel.trailingAnchor, constant: 10),
+            modeSegmentedControl.trailingAnchor.constraint(equalTo: modeBarView.trailingAnchor, constant: -12),
+            modeSegmentedControl.centerYAnchor.constraint(equalTo: modeBarView.centerYAnchor),
+        ])
+    }
+
+    private func configurePINPanel() {
+        let headerStack = UIStackView()
+        headerStack.axis = .horizontal
+        headerStack.spacing = 8
+        headerStack.alignment = .center
+        headerStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let titleLabel = UILabel()
+        titleLabel.text = "PIN Entry"
+        titleLabel.textColor = .white
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+
+        let spacer = UIView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        pinVisibilityButton.setTitle("Show", for: .normal)
+        pinVisibilityButton.addTarget(self, action: #selector(togglePinVisibility), for: .touchUpInside)
+
+        pinTrialLabel.textColor = .systemGray
+        pinTrialLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        pinTrialLabel.numberOfLines = 1
+
+        headerStack.addArrangedSubview(titleLabel)
+        headerStack.addArrangedSubview(spacer)
+        headerStack.addArrangedSubview(pinTrialLabel)
+        headerStack.addArrangedSubview(pinVisibilityButton)
+
+        pinStatusLabel.textColor = .white
+        pinStatusLabel.font = .monospacedSystemFont(ofSize: 14, weight: .medium)
+        pinStatusLabel.numberOfLines = 2
+        pinStatusLabel.textAlignment = .center
+
+        let keypadGrid = buildKeypadGrid()
+        let pinLayout = UIStackView(arrangedSubviews: [headerStack, pinStatusLabel, keypadGrid])
+        pinLayout.axis = .vertical
+        pinLayout.spacing = 10
+        pinLayout.translatesAutoresizingMaskIntoConstraints = false
+        pinLayout.isLayoutMarginsRelativeArrangement = true
+        pinLayout.layoutMargins = UIEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+
+        pinPanelView.addSubview(pinLayout)
+        NSLayoutConstraint.activate([
+            pinLayout.leadingAnchor.constraint(equalTo: pinPanelView.leadingAnchor),
+            pinLayout.trailingAnchor.constraint(equalTo: pinPanelView.trailingAnchor),
+            pinLayout.topAnchor.constraint(equalTo: pinPanelView.topAnchor),
+            pinLayout.bottomAnchor.constraint(equalTo: pinPanelView.bottomAnchor),
+        ])
+
+        updatePinDisplay()
+    }
+
+    private func buildKeypadGrid() -> UIView {
+        let container = UIStackView()
+        container.axis = .vertical
+        container.spacing = 8
+        container.distribution = .fillEqually
+
+        let digits: [[PINKeypadButtonSpec]] = [
+            [.digit("1"), .digit("2"), .digit("3")],
+            [.digit("4"), .digit("5"), .digit("6")],
+            [.digit("7"), .digit("8"), .digit("9")],
+            [.clear, .digit("0"), .submit],
+        ]
+
+        pinButtons.removeAll(keepingCapacity: true)
+        for rowSpecs in digits {
+            let row = UIStackView()
+            row.axis = .horizontal
+            row.spacing = 8
+            row.distribution = .fillEqually
+            row.alignment = .fill
+
+            for spec in rowSpecs {
+                let button = PINKeypadButton(spec: spec)
+                button.pinDelegate = self
+                pinButtons.append(button)
+                row.addArrangedSubview(button)
+            }
+            container.addArrangedSubview(row)
+        }
+        return container
     }
 
     private func configureDebugPanel() {
@@ -459,7 +629,32 @@ final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelega
         telemetryWarningLabel.textColor = .systemYellow
         telemetryHelperLabel.text = helperTelemetryText()
         telemetryConnectionTestResultLabel.text = "Connection test not run yet."
+        updatePinDisplay()
         refreshTelemetryStatus()
+    }
+
+    @objc private func modeSelectionChanged() {
+        interactionMode = modeSegmentedControl.selectedSegmentIndex == CaptureInteractionMode.pinKeypad.rawValue ? .pinKeypad : .freeTouch
+        pinPanelView.isHidden = interactionMode != .pinKeypad
+        if interactionMode == .pinKeypad {
+            startPinSequenceIfNeeded()
+        }
+        view.bringSubviewToFront(hudOverlayView)
+        view.bringSubviewToFront(topBarView)
+        view.bringSubviewToFront(modeBarView)
+        if interactionMode == .pinKeypad {
+            view.bringSubviewToFront(pinPanelView)
+        }
+        if isDebugPanelVisible {
+            view.bringSubviewToFront(debugPanelOverlayView)
+        }
+        updatePinDisplay()
+    }
+
+    @objc private func togglePinVisibility() {
+        pinDisplayIsMasked.toggle()
+        pinVisibilityButton.setTitle(pinDisplayIsMasked ? "Show" : "Hide", for: .normal)
+        updatePinDisplay()
     }
 
     private func makeFieldRow(label: String, field: UITextField) -> UIStackView {
@@ -517,6 +712,132 @@ final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelega
         }
     }
 
+    private func startPinSequenceIfNeeded() {
+        if pinSequenceId.uuidString.isEmpty {
+            pinSequenceId = UUID()
+        }
+        if pinTrialIndex == nil {
+            pinTrialIndex = 1
+        }
+    }
+
+    private func resetPinSequence(keepTrial: Bool = true) {
+        pinSequenceId = UUID()
+        enteredPin.removeAll(keepingCapacity: true)
+        if !keepTrial {
+            pinTrialIndex = nil
+            pinTrialTotal = nil
+        }
+        updatePinDisplay()
+    }
+
+    private func updatePinDisplay() {
+        let displayValue: String
+        if enteredPin.isEmpty {
+            displayValue = "PIN: _"
+        } else if pinDisplayIsMasked {
+            displayValue = "PIN: " + enteredPin.map { _ in "•" }.joined(separator: " ")
+        } else {
+            displayValue = "PIN: " + enteredPin.map(String.init).joined(separator: " ")
+        }
+
+        if let pinTrialIndex, let pinTrialTotal {
+            pinStatusLabel.text = "\(displayValue)\nTrial: \(pinTrialIndex) / \(pinTrialTotal)"
+        } else if let pinTrialIndex {
+            pinStatusLabel.text = "\(displayValue)\nTrial: \(pinTrialIndex)"
+        } else {
+            pinStatusLabel.text = "\(displayValue)\nTrial: —"
+        }
+        pinTrialLabel.text = "Sequence \(pinSequenceId.uuidString.prefix(4))…\(pinSequenceId.uuidString.suffix(4))"
+    }
+
+    private static func inputTypeString(for touchType: UITouch.TouchType) -> String {
+        switch touchType {
+        case .pencil:
+            return "pencil"
+        case .stylus:
+            return "stylus"
+        case .direct:
+            return "finger"
+        case .indirect:
+            return "indirect"
+        case .indirectPointer:
+            return "indirectPointer"
+        @unknown default:
+            return "unknown"
+        }
+    }
+
+    private func handlePINButtonTap(_ button: PINKeypadButton, touch: UITouch, phase: TouchPhase, event: UIEvent?) {
+        startPinSequenceIfNeeded()
+
+        let currentEnteredPin = enteredPin
+        let digitIndex: Int?
+        let buttonId = button.buttonId
+        var digitValue: String?
+        var keypadAction: String?
+
+        switch button.spec {
+        case .digit(let digit):
+            enteredPin.append(digit)
+            digitValue = digit
+            digitIndex = enteredPin.count
+        case .clear:
+            keypadAction = "clear"
+            digitIndex = nil
+            enteredPin.removeAll(keepingCapacity: true)
+        case .submit:
+            keypadAction = "submit"
+            digitIndex = nil
+        }
+
+        let pinSequenceValue: String
+        switch button.spec {
+        case .digit:
+            pinSequenceValue = expectedPin ?? enteredPin
+        case .clear, .submit:
+            pinSequenceValue = expectedPin ?? currentEnteredPin
+        }
+
+        let pinMetadata = TouchPinMetadata(
+            pinSequenceId: pinSequenceId,
+            pinSequence: pinSequenceValue,
+            digit: digitValue,
+            digitIndex: digitIndex,
+            keypadButtonId: buttonId,
+            keypadAction: keypadAction,
+            expectedPin: expectedPin,
+            enteredPinSoFar: button.spec.isClearOrSubmit ? currentEnteredPin : enteredPin,
+            buttonFrame: button.convert(button.bounds, to: view)
+        )
+
+        let touchId = button.currentTouchId ?? UUID()
+        let totalEvents = TouchLogger.shared.recordPINKeypadInteraction(
+            touch: touch,
+            phase: phase,
+            in: view,
+            buttonFrame: button.convert(button.bounds, to: view),
+            pinMetadata: pinMetadata,
+            touchId: touchId,
+            inputTypeOverride: Self.inputTypeString(for: touch.type),
+            event: event
+        )
+        button.currentTouchId = nil
+
+        if button.spec == .submit {
+            pinSequenceId = UUID()
+            enteredPin.removeAll(keepingCapacity: true)
+        }
+
+        if button.spec == .clear {
+            enteredPin.removeAll(keepingCapacity: true)
+        }
+
+        statusLabel.text = statusHUDText(eventCountOverride: totalEvents)
+        updatePinDisplay()
+        refreshTelemetryStatus()
+    }
+
     private func refreshTelemetryStatus() {
         let snapshot = TouchLogger.shared.liveTelemetrySnapshot()
         let currentHost = normalizedHostText()
@@ -548,6 +869,10 @@ final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelega
         updateTelemetryButtonState(host: currentHost)
         view.bringSubviewToFront(hudOverlayView)
         view.bringSubviewToFront(topBarView)
+        view.bringSubviewToFront(modeBarView)
+        if !pinPanelView.isHidden {
+            view.bringSubviewToFront(pinPanelView)
+        }
         if isDebugPanelVisible {
             view.bringSubviewToFront(debugPanelOverlayView)
         }
@@ -702,5 +1027,97 @@ private extension UILabel {
         label.font = .systemFont(ofSize: 11, weight: .semibold)
         label.setContentHuggingPriority(.required, for: .horizontal)
         return label
+    }
+}
+
+enum PINKeypadButtonSpec: Equatable {
+    case digit(String)
+    case clear
+    case submit
+
+    var title: String {
+        switch self {
+        case .digit(let digit):
+            return digit
+        case .clear:
+            return "Clear"
+        case .submit:
+            return "Submit"
+        }
+    }
+
+    var buttonId: String {
+        switch self {
+        case .digit(let digit):
+            return "digit_\(digit)"
+        case .clear:
+            return "clear"
+        case .submit:
+            return "submit"
+        }
+    }
+
+    var isClearOrSubmit: Bool {
+        switch self {
+        case .clear, .submit:
+            return true
+        case .digit:
+            return false
+        }
+    }
+}
+
+final class PINKeypadButton: UIButton {
+    weak var pinDelegate: PINKeypadButtonDelegate?
+    let spec: PINKeypadButtonSpec
+    var currentTouchId: UUID?
+
+    var buttonId: String {
+        spec.buttonId
+    }
+
+    init(spec: PINKeypadButtonSpec) {
+        self.spec = spec
+        super.init(frame: .zero)
+        configure()
+    }
+
+    required init?(coder: NSCoder) {
+        self.spec = .digit("0")
+        super.init(coder: coder)
+        configure()
+    }
+
+    private func configure() {
+        setTitle(spec.title, for: .normal)
+        titleLabel?.font = .systemFont(ofSize: 18, weight: .semibold)
+        setTitleColor(.white, for: .normal)
+        backgroundColor = UIColor(white: 0.18, alpha: 1.0)
+        layer.cornerRadius = 12
+        layer.masksToBounds = true
+        heightAnchor.constraint(greaterThanOrEqualToConstant: 58).isActive = true
+        isMultipleTouchEnabled = false
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesBegan(touches, with: event)
+        if currentTouchId == nil {
+            currentTouchId = UUID()
+        }
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesEnded(touches, with: event)
+        guard let touch = touches.first else { return }
+        if bounds.contains(touch.location(in: self)) {
+            pinDelegate?.pinKeypadButton(self, didFinishTouch: touch, phase: .ended, event: event)
+        }
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesCancelled(touches, with: event)
+        guard let touch = touches.first else { return }
+        pinDelegate?.pinKeypadButton(self, didFinishTouch: touch, phase: .cancelled, event: event)
+        currentTouchId = nil
     }
 }

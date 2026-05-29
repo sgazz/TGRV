@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 
 from touchprint_lab.analyzer.models import TouchEventRecord, TouchSessionRecord
+from touchprint_lab.utils.numeric import safe_nanvar
 
 
 def session_rows(session: TouchSessionRecord) -> list[dict[str, Any]]:
@@ -51,16 +52,12 @@ def average_force(session: TouchSessionRecord) -> float:
 
 def force_variance(session: TouchSessionRecord) -> float:
     values = [event.force for event in session.events if event.force is not None]
-    if len(values) < 2:
-        return 0.0
-    return float(np.var(np.asarray(values, dtype=np.float64)))
+    return safe_nanvar(values)
 
 
 def radius_variance(session: TouchSessionRecord) -> float:
     values = [event.major_radius for event in session.events]
-    if len(values) < 2:
-        return 0.0
-    return float(np.var(np.asarray(values, dtype=np.float64)))
+    return safe_nanvar(values)
 
 
 def drift_distance(session: TouchSessionRecord) -> float:

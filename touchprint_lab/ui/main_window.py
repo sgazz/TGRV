@@ -4,7 +4,8 @@ import json
 import logging
 from typing import Any
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -79,8 +80,8 @@ class MainWindow(QMainWindow):
         self.metadata_box = QPlainTextEdit()
         self.metadata_box.setReadOnly(True)
 
-        left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
+        self.left_panel = QWidget()
+        left_layout = QVBoxLayout(self.left_panel)
         left_layout.addWidget(QLabel("Users"))
         left_layout.addWidget(self.user_list, 1)
         left_layout.addWidget(QLabel("Sessions"))
@@ -119,8 +120,8 @@ class MainWindow(QMainWindow):
         self.marker_button = QPushButton("Session Marker")
         self.marker_button.clicked.connect(self._mark_session)
 
-        controls_frame = QFrame()
-        controls_layout = QVBoxLayout(controls_frame)
+        self.controls_frame = QFrame()
+        controls_layout = QVBoxLayout(self.controls_frame)
         controls_layout.addWidget(QLabel("Experimental Controls"))
         controls_layout.addWidget(QLabel("Entered Sequence"))
         controls_layout.addWidget(self.sequence_display)
@@ -131,6 +132,7 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(keypad)
         controls_layout.addWidget(self.marker_button)
         controls_layout.addWidget(self.reset_button)
+        self.controls_expanded = False
 
         self.feature_inspector = FeatureInspectorWidget()
         self.batch_analysis = BatchAnalysisWidget(self.paths)
@@ -146,26 +148,94 @@ class MainWindow(QMainWindow):
         self.analysis_tabs.addTab(self.feature_inspector, "Feature Inspector")
         self.analysis_tabs.addTab(self.batch_analysis, "Batch Analysis")
         self.analysis_tabs.addTab(self.protocol_orchestrator, "Experiment Protocol")
-        self.analysis_tabs.addTab(self.live_dashboard, "Live Telemetry")
+        self.live_tab_index = self.analysis_tabs.addTab(self.live_dashboard, "Live Telemetry")
         self.analysis_tabs.addTab(self.study_library, "Study Library")
+        self.analysis_tabs.currentChanged.connect(self._handle_tab_change)
+
+        self.live_compact_header = QFrame()
+        self.live_compact_header.setVisible(False)
+        self.live_compact_header.setStyleSheet(
+            """
+            QFrame {
+                background: rgba(255, 255, 255, 0.06);
+                border: 1px solid rgba(255, 255, 255, 0.10);
+                border-radius: 10px;
+            }
+            QLabel {
+                color: #f5f5f7;
+                font-size: 11px;
+            }
+            QPushButton {
+                color: #f5f5f7;
+                background: rgba(255, 255, 255, 0.10);
+                border: 1px solid rgba(255, 255, 255, 0.10);
+                border-radius: 8px;
+                padding: 5px 10px;
+            }
+            QPushButton:hover {
+                background: rgba(255, 255, 255, 0.16);
+            }
+            """
+        )
+        live_header_layout = QHBoxLayout(self.live_compact_header)
+        live_header_layout.setContentsMargins(10, 8, 10, 8)
+        live_header_layout.setSpacing(8)
+        self.live_header_label = QLabel("LIVE disconnected | — | 0.0 Hz | Session — | Export — | Taps 0 | Markers 0")
+        self.live_header_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.live_controls_toggle_button = QPushButton("Controls")
+        self.live_controls_toggle_button.clicked.connect(self._toggle_live_controls_panel)
+        self.live_debug_toggle_button = QPushButton("Debug")
+        self.live_debug_toggle_button.clicked.connect(self._toggle_live_debug_panel)
+        live_header_layout.addWidget(self.live_header_label, 1)
+        live_header_layout.addWidget(self.live_controls_toggle_button)
+        live_header_layout.addWidget(self.live_debug_toggle_button)
+
+        self.live_controls_panel = QFrame()
+        self.live_controls_panel.setVisible(False)
+        self.live_controls_panel.setStyleSheet(
+            """
+            QFrame {
+                background: rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 10px;
+            }
+            """
+        )
+        live_controls_layout = QVBoxLayout(self.live_controls_panel)
+        live_controls_layout.setContentsMargins(10, 10, 10, 10)
+        live_controls_layout.addWidget(self.controls_frame)
 
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
-        right_layout.addWidget(controls_frame)
+        right_layout.addWidget(self.live_compact_header)
+        right_layout.addWidget(self.live_controls_panel)
         right_layout.addWidget(self.analysis_tabs, 1)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(left_panel)
-        splitter.addWidget(self.plot_widget)
-        splitter.addWidget(right_panel)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 3)
-        splitter.setStretchFactor(2, 2)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.addWidget(self.left_panel)
+        self.splitter.addWidget(self.plot_widget)
+        self.splitter.addWidget(right_panel)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 3)
+        self.splitter.setStretchFactor(2, 2)
 
         container = QWidget()
         layout = QHBoxLayout(container)
-        layout.addWidget(splitter)
+        layout.addWidget(self.splitter)
         self.setCentralWidget(container)
+
+        view_menu = self.menuBar().addMenu("View")
+        self.compact_live_action = QAction("Compact Live Mode", self)
+        self.compact_live_action.setCheckable(True)
+        self.compact_live_action.toggled.connect(self._force_compact_live_mode)
+        view_menu.addAction(self.compact_live_action)
+
+        self._handle_tab_change(self.analysis_tabs.currentIndex())
+        self._refresh_live_header()
+        self.live_header_timer = QTimer(self)
+        self.live_header_timer.setInterval(500)
+        self.live_header_timer.timeout.connect(self._refresh_live_header)
+        self.live_header_timer.start()
 
     def _refresh_lists(self) -> None:
         selected_session_id = self.current_session.session_id if self.current_session else None
@@ -235,6 +305,53 @@ class MainWindow(QMainWindow):
         self.batch_analysis.set_current_session(self.current_session)
         self.protocol_orchestrator.set_current_session(self.current_session)
         self.study_library.set_current_session(self.current_session)
+
+    def _handle_tab_change(self, index: int) -> None:
+        compact_live_mode = index == self.live_tab_index or self.compact_live_action.isChecked()
+        self._apply_compact_live_mode(compact_live_mode)
+
+    def _apply_compact_live_mode(self, enabled: bool) -> None:
+        self.left_panel.setVisible(not enabled)
+        self.plot_widget.setVisible(not enabled)
+        self.plot_widget.set_compact_mode(enabled)
+        self.controls_frame.setVisible(not enabled)
+        self.live_compact_header.setVisible(enabled)
+        self.live_controls_panel.setVisible(enabled and self.controls_expanded)
+        if not enabled:
+            self.controls_expanded = True
+            self.live_controls_panel.setVisible(False)
+        if enabled:
+            self.splitter.setSizes([0, 0, max(self.width(), 1)])
+        else:
+            self.splitter.setSizes([max(self.width() // 5, 1), max(self.width() * 3 // 5, 1), max(self.width() // 3, 1)])
+
+    def _force_compact_live_mode(self, checked: bool) -> None:
+        if checked:
+            self.analysis_tabs.setCurrentIndex(self.live_tab_index)
+        else:
+            self._apply_compact_live_mode(False)
+
+    def _toggle_live_controls_panel(self) -> None:
+        if self.analysis_tabs.currentIndex() != self.live_tab_index:
+            self.analysis_tabs.setCurrentIndex(self.live_tab_index)
+        self.controls_expanded = not self.controls_expanded
+        self.live_controls_panel.setVisible(self.controls_expanded)
+
+    def _toggle_live_debug_panel(self) -> None:
+        if self.analysis_tabs.currentIndex() != self.live_tab_index:
+            self.analysis_tabs.setCurrentIndex(self.live_tab_index)
+        self.live_dashboard.toggle_debug_panel()
+
+    def _refresh_live_header(self) -> None:
+        snapshot = self.live_telemetry_server.snapshot()
+        active_session = next((session for session in snapshot.sessions if session.get("sessionId") == snapshot.active_session_id), None)
+        device = (active_session or {}).get("deviceType", snapshot.export_summary.get("deviceType", "—")) or "—"
+        session_id = snapshot.active_session_id or "—"
+        short_session = session_id if session_id == "—" or len(session_id) <= 8 else f"{session_id[:4]}…{session_id[-4:]}"
+        self.live_header_label.setText(
+            f"{snapshot.connection_status} | {device} | {snapshot.sample_rate_hz:.1f} Hz | Session {short_session} | "
+            f"Export {snapshot.export_status} | Taps {self.tap_count} | Markers {self.marker_count}"
+        )
 
     def _handle_user_selection(self, current: QListWidgetItem | None, previous: QListWidgetItem | None) -> None:
         if current is None:

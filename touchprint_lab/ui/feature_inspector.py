@@ -23,6 +23,7 @@ from touchprint_lab.analyzer.similarity import (
     top_matches,
 )
 from touchprint_lab.plots.feature_plots import FeaturePlotWidget
+from touchprint_lab.utils.numeric import safe_nanvar
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +140,7 @@ class FeatureInspectorWidget(QWidget):
 
         feature_values = np.asarray([getattr(vector, feature_name, 0.0) for vector in candidates], dtype=np.float64)
         feature_values = feature_values[np.isfinite(feature_values)]
-        variance = float(np.var(feature_values)) if len(feature_values) > 1 else 0.0
+        variance = safe_nanvar(feature_values)
         self.variance_label.setText(f"Variance: {variance:.6f}")
 
         if comparison_vector is None:

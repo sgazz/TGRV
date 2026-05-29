@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 enum TouchPhase: String, Codable {
     case began
@@ -28,6 +29,56 @@ enum DeviceType: String, Codable {
     case other
 }
 
+struct TouchPinMetadata: Codable, Equatable, Sendable {
+    let experimentMode: String
+    let pinSequenceId: UUID
+    let pinSequence: String?
+    let digit: String?
+    let digitIndex: Int?
+    let keypadButtonId: String
+    let keypadAction: String?
+    let expectedPin: String?
+    let enteredPinSoFar: String?
+    let buttonFrameX: Double?
+    let buttonFrameY: Double?
+    let buttonFrameWidth: Double?
+    let buttonFrameHeight: Double?
+
+    init(
+        experimentMode: String = "pin_entry",
+        pinSequenceId: UUID,
+        pinSequence: String? = nil,
+        digit: String? = nil,
+        digitIndex: Int? = nil,
+        keypadButtonId: String,
+        keypadAction: String? = nil,
+        expectedPin: String? = nil,
+        enteredPinSoFar: String? = nil,
+        buttonFrame: CGRect? = nil
+    ) {
+        self.experimentMode = experimentMode
+        self.pinSequenceId = pinSequenceId
+        self.pinSequence = pinSequence
+        self.digit = digit
+        self.digitIndex = digitIndex
+        self.keypadButtonId = keypadButtonId
+        self.keypadAction = keypadAction
+        self.expectedPin = expectedPin
+        self.enteredPinSoFar = enteredPinSoFar
+        if let buttonFrame {
+            self.buttonFrameX = Double(buttonFrame.origin.x)
+            self.buttonFrameY = Double(buttonFrame.origin.y)
+            self.buttonFrameWidth = Double(buttonFrame.size.width)
+            self.buttonFrameHeight = Double(buttonFrame.size.height)
+        } else {
+            self.buttonFrameX = nil
+            self.buttonFrameY = nil
+            self.buttonFrameWidth = nil
+            self.buttonFrameHeight = nil
+        }
+    }
+}
+
 struct TouchEvent: Codable, Identifiable, Equatable {
     let id: UUID
     let sessionId: UUID
@@ -48,6 +99,19 @@ struct TouchEvent: Codable, Identifiable, Equatable {
     let deviceType: DeviceType
     let coalescedTouchesCount: Int
     let predictedTouchesCount: Int
+    let experimentMode: String?
+    let pinSequenceId: UUID?
+    let pinSequence: String?
+    let digit: String?
+    let digitIndex: Int?
+    let keypadButtonId: String?
+    let keypadAction: String?
+    let expectedPin: String?
+    let enteredPinSoFar: String?
+    let buttonFrameX: Double?
+    let buttonFrameY: Double?
+    let buttonFrameWidth: Double?
+    let buttonFrameHeight: Double?
 }
 
 struct TouchSessionExport: Codable, Equatable {

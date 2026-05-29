@@ -105,6 +105,88 @@ final class TouchLogger {
         }
     }
 
+    func recordPINKeypadInteraction(
+        touch: UITouch,
+        phase: TouchPhase,
+        in referenceView: UIView,
+        buttonFrame: CGRect,
+        pinMetadata: TouchPinMetadata,
+        touchId: UUID,
+        sampleKind: TouchSampleKind = .live,
+        sampleIndex: Int = 0,
+        sampleCount: Int = 1,
+        deviceType: DeviceType? = nil,
+        inputTypeOverride: String? = nil,
+        event: UIEvent? = nil
+    ) -> Int {
+        let sessionId = SessionManager.shared.currentSessionId()
+        let resolvedDeviceType = deviceType ?? Self.currentDeviceType
+        let coalescedTouches = event?.coalescedTouches(for: touch) ?? []
+        let predictedTouches = event?.predictedTouches(for: touch) ?? []
+        let point = touch.location(in: referenceView)
+        let isPressureSupported = touch.maximumPossibleForce > 0
+        let force = isPressureSupported ? Double(touch.force) : nil
+
+        let altitudeAngle: Double?
+        let azimuthAngle: Double?
+        switch touch.type {
+        case .pencil, .stylus:
+            altitudeAngle = Double(touch.altitudeAngle)
+            azimuthAngle = Double(touch.azimuthAngle(in: referenceView))
+        default:
+            altitudeAngle = nil
+            azimuthAngle = nil
+        }
+
+        return queue.sync {
+            appendTouchEvent(
+                sessionId: sessionId,
+                touchId: touchId,
+                phase: phase,
+                sampleKind: sampleKind,
+                sampleIndex: sampleIndex,
+                sampleCount: sampleCount,
+                timestamp: touch.timestamp,
+                x: Double(point.x),
+                y: Double(point.y),
+                force: force,
+                maximumPossibleForce: Double(touch.maximumPossibleForce),
+                majorRadius: Double(touch.majorRadius),
+                altitudeAngle: altitudeAngle,
+                azimuthAngle: azimuthAngle,
+                touchType: Self.touchInputType(for: touch.type),
+                deviceType: resolvedDeviceType,
+                coalescedCount: coalescedTouches.count,
+                predictedCount: predictedTouches.count,
+                pinMetadata: pinMetadata
+            )
+
+            if telemetryHostConfigured {
+                telemetryClient.sendPINKeypadEvent(
+                    sessionId: sessionId,
+                    touchId: touchId,
+                    timestamp: touch.timestamp,
+                    phase: phase,
+                    x: Double(point.x),
+                    y: Double(point.y),
+                    force: force,
+                    maximumPossibleForce: Double(touch.maximumPossibleForce),
+                    majorRadius: Double(touch.majorRadius),
+                    altitudeAngle: altitudeAngle,
+                    azimuthAngle: azimuthAngle,
+                    coalescedCount: coalescedTouches.count,
+                    predictedCount: predictedTouches.count,
+                    deviceType: Self.currentDeviceTypeString,
+                    inputType: inputTypeOverride ?? Self.touchInputString(for: touch.type),
+                    exportExpected: true,
+                    pinMetadata: pinMetadata
+                )
+            }
+
+            return events.count
+        }
+    }
+
     func eventCount() -> Int {
         queue.sync { events.count }
     }
@@ -240,7 +322,20 @@ final class TouchLogger {
             touchType: Self.touchInputType(for: touch.type),
             deviceType: deviceType,
             coalescedTouchesCount: coalescedCount,
-            predictedTouchesCount: predictedCount
+            predictedTouchesCount: predictedCount,
+            experimentMode: nil,
+            pinSequenceId: nil,
+            pinSequence: nil,
+            digit: nil,
+            digitIndex: nil,
+            keypadButtonId: nil,
+            keypadAction: nil,
+            expectedPin: nil,
+            enteredPinSoFar: nil,
+            buttonFrameX: nil,
+            buttonFrameY: nil,
+            buttonFrameWidth: nil,
+            buttonFrameHeight: nil
         )
 
         events.append(event)
@@ -252,9 +347,69 @@ final class TouchLogger {
                 sampleCount: sampleCount,
                 deviceType: Self.currentDeviceTypeString,
                 inputType: Self.touchInputString(for: touch.type),
-                exportExpected: true
+                exportExpected: true,
+                pinMetadata: nil
             )
         }
+    }
+
+    private func appendTouchEvent(
+        sessionId: UUID,
+        touchId: UUID,
+        phase: TouchPhase,
+        sampleKind: TouchSampleKind,
+        sampleIndex: Int,
+        sampleCount: Int,
+        timestamp: Double,
+        x: Double,
+        y: Double,
+        force: Double?,
+        maximumPossibleForce: Double,
+        majorRadius: Double,
+        altitudeAngle: Double?,
+        azimuthAngle: Double?,
+        touchType: TouchInputType,
+        deviceType: DeviceType,
+        coalescedCount: Int,
+        predictedCount: Int,
+        pinMetadata: TouchPinMetadata? = nil
+    ) {
+        let event = TouchEvent(
+            id: UUID(),
+            sessionId: sessionId,
+            touchId: touchId,
+            phase: phase,
+            sampleKind: sampleKind,
+            sampleIndex: sampleIndex,
+            sampleCount: sampleCount,
+            timestamp: timestamp,
+            x: x,
+            y: y,
+            force: force,
+            maximumPossibleForce: maximumPossibleForce,
+            majorRadius: majorRadius,
+            altitudeAngle: altitudeAngle,
+            azimuthAngle: azimuthAngle,
+            touchType: touchType,
+            deviceType: deviceType,
+            coalescedTouchesCount: coalescedCount,
+            predictedTouchesCount: predictedCount,
+            experimentMode: pinMetadata?.experimentMode,
+            pinSequenceId: pinMetadata?.pinSequenceId,
+            pinSequence: pinMetadata?.pinSequence,
+            digit: pinMetadata?.digit,
+            digitIndex: pinMetadata?.digitIndex,
+            keypadButtonId: pinMetadata?.keypadButtonId,
+            keypadAction: pinMetadata?.keypadAction,
+            expectedPin: pinMetadata?.expectedPin,
+            enteredPinSoFar: pinMetadata?.enteredPinSoFar,
+            buttonFrameX: pinMetadata?.buttonFrameX,
+            buttonFrameY: pinMetadata?.buttonFrameY,
+            buttonFrameWidth: pinMetadata?.buttonFrameWidth,
+            buttonFrameHeight: pinMetadata?.buttonFrameHeight
+        )
+
+        events.append(event)
     }
 
     private static func touchInputType(for type: UITouch.TouchType) -> TouchInputType {

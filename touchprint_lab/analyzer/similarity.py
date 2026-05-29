@@ -4,6 +4,8 @@ from typing import Any
 
 import numpy as np
 
+from touchprint_lab.utils.numeric import safe_nanstd
+
 try:
     from sklearn.decomposition import PCA  # type: ignore
     from sklearn.preprocessing import StandardScaler  # type: ignore
@@ -11,7 +13,7 @@ except Exception:  # pragma: no cover - optional dependency fallback
     class StandardScaler:  # type: ignore
         def fit_transform(self, matrix: np.ndarray) -> np.ndarray:
             self.mean_ = np.mean(matrix, axis=0)
-            self.scale_ = np.std(matrix, axis=0)
+            self.scale_ = np.asarray([safe_nanstd(matrix[:, index]) for index in range(matrix.shape[1])], dtype=np.float64)
             self.scale_ = np.where(self.scale_ == 0, 1.0, self.scale_)
             return (matrix - self.mean_) / self.scale_
 

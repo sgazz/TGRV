@@ -27,6 +27,19 @@ class TouchEventRecord:
     device_type: str
     coalesced_touches_count: int
     predicted_touches_count: int
+    experiment_mode: str | None = None
+    pin_sequence_id: str | None = None
+    pin_sequence: str | None = None
+    digit: str | None = None
+    digit_index: int | None = None
+    keypad_button_id: str | None = None
+    keypad_action: str | None = None
+    expected_pin: str | None = None
+    entered_pin_so_far: str | None = None
+    button_frame_x: float | None = None
+    button_frame_y: float | None = None
+    button_frame_width: float | None = None
+    button_frame_height: float | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "TouchEventRecord":
@@ -50,6 +63,19 @@ class TouchEventRecord:
             device_type=str(payload.get("deviceType", "other")),
             coalesced_touches_count=int(payload.get("coalescedTouchesCount", 0)),
             predicted_touches_count=int(payload.get("predictedTouchesCount", 0)),
+            experiment_mode=_optional_string(payload.get("experimentMode")),
+            pin_sequence_id=_optional_string(payload.get("pinSequenceId")),
+            pin_sequence=_optional_string(payload.get("pinSequence")),
+            digit=_optional_string(payload.get("digit")),
+            digit_index=_optional_int(payload.get("digitIndex")),
+            keypad_button_id=_optional_string(payload.get("keypadButtonId")),
+            keypad_action=_optional_string(payload.get("keypadAction")),
+            expected_pin=_optional_string(payload.get("expectedPin")),
+            entered_pin_so_far=_optional_string(payload.get("enteredPinSoFar")),
+            button_frame_x=_optional_float(payload.get("buttonFrameX")),
+            button_frame_y=_optional_float(payload.get("buttonFrameY")),
+            button_frame_width=_optional_float(payload.get("buttonFrameWidth")),
+            button_frame_height=_optional_float(payload.get("buttonFrameHeight")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -73,6 +99,19 @@ class TouchEventRecord:
             "deviceType": self.device_type,
             "coalescedTouchesCount": self.coalesced_touches_count,
             "predictedTouchesCount": self.predicted_touches_count,
+            "experimentMode": self.experiment_mode,
+            "pinSequenceId": self.pin_sequence_id,
+            "pinSequence": self.pin_sequence,
+            "digit": self.digit,
+            "digitIndex": self.digit_index,
+            "keypadButtonId": self.keypad_button_id,
+            "keypadAction": self.keypad_action,
+            "expectedPin": self.expected_pin,
+            "enteredPinSoFar": self.entered_pin_so_far,
+            "buttonFrameX": self.button_frame_x,
+            "buttonFrameY": self.button_frame_y,
+            "buttonFrameWidth": self.button_frame_width,
+            "buttonFrameHeight": self.button_frame_height,
         }
 
 
@@ -184,3 +223,15 @@ def _optional_float(value: Any) -> float | None:
     if value is None or value == "":
         return None
     return float(value)
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    return int(value)
+
+
+def _optional_string(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    return str(value)

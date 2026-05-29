@@ -21,6 +21,7 @@ except Exception:  # pragma: no cover - keep module importable
 from touchprint_lab.analyzer.features import TouchFeatureVector
 from touchprint_lab.analyzer.models import TouchSessionRecord
 from touchprint_lab.analyzer.similarity import cosine_similarity, normalized_distance_score
+from touchprint_lab.utils.numeric import safe_nanstd
 from touchprint_lab.utils.paths import TouchprintPaths
 
 logger = logging.getLogger(__name__)
@@ -654,7 +655,7 @@ class ExperimentManager:
                     "experimentId": experiment_id,
                     "sessionCount": len(ordered),
                     "meanRepeatability": float(np.mean(similarity_scores)) if similarity_scores else 0.0,
-                    "stdRepeatability": float(np.std(similarity_scores)) if len(similarity_scores) > 1 else 0.0,
+                    "stdRepeatability": safe_nanstd(similarity_scores),
                     "adaptationDelta": self._adaptation_delta(ordered),
                     "driftScore": self._drift_score(ordered),
                 }

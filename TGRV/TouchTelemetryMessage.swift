@@ -28,6 +28,19 @@ struct TouchTelemetryMessage: Codable, Sendable {
     let sampleKind: String?
     let sampleIndex: Int?
     let sampleCount: Int?
+    let experimentMode: String?
+    let pinSequenceId: String?
+    let pinSequence: String?
+    let digit: String?
+    let digitIndex: Int?
+    let keypadButtonId: String?
+    let keypadAction: String?
+    let expectedPin: String?
+    let enteredPinSoFar: String?
+    let buttonFrameX: Double?
+    let buttonFrameY: Double?
+    let buttonFrameWidth: Double?
+    let buttonFrameHeight: Double?
 
     static func touchEvent(
         sessionId: UUID,
@@ -48,7 +61,8 @@ struct TouchTelemetryMessage: Codable, Sendable {
         exportExpected: Bool,
         sampleKind: TouchSampleKind,
         sampleIndex: Int,
-        sampleCount: Int
+        sampleCount: Int,
+        pinMetadata: TouchPinMetadata? = nil
     ) -> TouchTelemetryMessage {
         TouchTelemetryMessage(
             messageType: .touchEvent,
@@ -70,7 +84,20 @@ struct TouchTelemetryMessage: Codable, Sendable {
             inputType: inputType,
             sampleKind: sampleKind.rawValue,
             sampleIndex: sampleIndex,
-            sampleCount: sampleCount
+            sampleCount: sampleCount,
+            experimentMode: pinMetadata?.experimentMode,
+            pinSequenceId: pinMetadata?.pinSequenceId.uuidString,
+            pinSequence: pinMetadata?.pinSequence,
+            digit: pinMetadata?.digit,
+            digitIndex: pinMetadata?.digitIndex,
+            keypadButtonId: pinMetadata?.keypadButtonId,
+            keypadAction: pinMetadata?.keypadAction,
+            expectedPin: pinMetadata?.expectedPin,
+            enteredPinSoFar: pinMetadata?.enteredPinSoFar,
+            buttonFrameX: pinMetadata?.buttonFrameX,
+            buttonFrameY: pinMetadata?.buttonFrameY,
+            buttonFrameWidth: pinMetadata?.buttonFrameWidth,
+            buttonFrameHeight: pinMetadata?.buttonFrameHeight
         )
     }
 
@@ -101,7 +128,20 @@ struct TouchTelemetryMessage: Codable, Sendable {
             inputType: inputType,
             sampleKind: nil,
             sampleIndex: nil,
-            sampleCount: nil
+            sampleCount: nil,
+            experimentMode: nil,
+            pinSequenceId: nil,
+            pinSequence: nil,
+            digit: nil,
+            digitIndex: nil,
+            keypadButtonId: nil,
+            keypadAction: nil,
+            expectedPin: nil,
+            enteredPinSoFar: nil,
+            buttonFrameX: nil,
+            buttonFrameY: nil,
+            buttonFrameWidth: nil,
+            buttonFrameHeight: nil
         )
     }
 
@@ -129,6 +169,19 @@ struct TouchTelemetryMessage: Codable, Sendable {
         object["sampleKind"] = sampleKind
         object["sampleIndex"] = sampleIndex
         object["sampleCount"] = sampleCount
+        object["experimentMode"] = experimentMode
+        object["pinSequenceId"] = pinSequenceId
+        object["pinSequence"] = pinSequence
+        object["digit"] = digit
+        object["digitIndex"] = digitIndex
+        object["keypadButtonId"] = keypadButtonId
+        object["keypadAction"] = keypadAction
+        object["expectedPin"] = expectedPin
+        object["enteredPinSoFar"] = enteredPinSoFar
+        object["buttonFrameX"] = buttonFrameX
+        object["buttonFrameY"] = buttonFrameY
+        object["buttonFrameWidth"] = buttonFrameWidth
+        object["buttonFrameHeight"] = buttonFrameHeight
         return object
     }
 }

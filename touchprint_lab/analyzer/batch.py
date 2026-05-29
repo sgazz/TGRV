@@ -34,6 +34,7 @@ except Exception:  # pragma: no cover - optional dependency fallback
 from touchprint_lab.analyzer.features import TouchFeatureVector
 from touchprint_lab.analyzer.models import TouchSessionRecord
 from touchprint_lab.analyzer.similarity import cluster_projection, cosine_similarity, euclidean_distance, normalized_distance_score, normalized_feature_matrix
+from touchprint_lab.utils.numeric import safe_nanstd, safe_nanvar
 
 logger = logging.getLogger(__name__)
 
@@ -348,7 +349,7 @@ class BatchAnalyzer:
         normalized_inter = _array([row["normalizedSimilarityScore"] for row in rows if not row["sameUser"]])
         normalized_effect = _effect_size(normalized_intra, normalized_inter)
         normalized["repeatabilityScore"] = _clip01(float(np.mean(normalized_intra)) if len(normalized_intra) else 0.0)
-        normalized["stabilityScore"] = _clip01(1.0 / (1.0 + float(np.std(normalized_intra)))) if len(normalized_intra) else 0.0
+        normalized["stabilityScore"] = _clip01(1.0 / (1.0 + float(safe_nanstd(normalized_intra)))) if len(normalized_intra) else 0.0
         normalized["separabilityScore"] = _clip01(1.0 / (1.0 + math.exp(-normalized_effect)))
         return summary
 
@@ -454,12 +455,12 @@ class BatchAnalyzer:
 
         for index, feature_name in enumerate(feature_names):
             values = matrix[:, index]
-            overall_variance = float(np.var(values)) if len(values) > 1 else 0.0
+            overall_variance = safe_nanvar(values)
             user_groups = [values[user_ids == user_id] for user_id in sorted(set(user_ids.tolist()))]
             user_groups = [group for group in user_groups if len(group)]
             user_means = np.asarray([float(np.mean(group)) for group in user_groups], dtype=np.float64) if user_groups else np.zeros(0)
-            within_user_variance = float(np.mean([np.var(group) for group in user_groups])) if user_groups else 0.0
-            between_user_variance = float(np.var(user_means)) if len(user_means) > 1 else 0.0
+            within_user_variance = float(np.mean([safe_nanvar(group) for group in user_groups])) if user_groups else 0.0
+            between_user_variance = safe_nanvar(user_means)
             discriminative_power = between_user_variance / (within_user_variance + EPSILON)
             abs_correlations = [abs(float(correlation_matrix[index, other])) for other in range(len(feature_names)) if other != index]
             redundancy = float(np.mean(abs_correlations)) if abs_correlations else 0.0
@@ -1200,7 +1201,7 @@ def _mean(values: np.ndarray) -> float:
 
 
 def _std(values: np.ndarray) -> float:
-    return float(np.std(values)) if len(values) > 1 else 0.0
+    return safe_nanstd(values)
 
 
 def _clip01(value: float) -> float:
@@ -1240,7 +1241,7 @@ def _histogram_overlap(left: np.ndarray, right: np.ndarray) -> float:
 def _gaussian_kde(values: np.ndarray, grid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     if len(values) == 0 or len(grid) == 0:
         return grid, np.zeros_like(grid, dtype=np.float64)
-    std = float(np.std(values))
+    std = safe_nanstd(values)
     if std <= EPSILON:
         bandwidth = max(float(np.ptp(values)) / 20.0, 1e-3)
     else:
@@ -1255,8 +1256,8 @@ def _effect_size(left: np.ndarray, right: np.ndarray) -> float:
         return 0.0
     left_mean = float(np.mean(left))
     right_mean = float(np.mean(right))
-    left_var = float(np.var(left))
-    right_var = float(np.var(right))
+    left_var = safe_nanvar(left)
+    right_var = safe_nanvar(right)
     pooled_std = math.sqrt((left_var + right_var) / 2.0)
     return (left_mean - right_mean) / (pooled_std + EPSILON)
 
@@ -1265,7 +1266,7 @@ def _correlation_matrix(matrix: np.ndarray) -> np.ndarray:
     if matrix.size == 0:
         return np.zeros((0, 0), dtype=np.float64)
     centered = matrix - np.mean(matrix, axis=0, keepdims=True)
-    scale = np.std(centered, axis=0, keepdims=True)
+    scale = np.asarray([safe_nanstd(centered[:, index]) for index in range(centered.shape[1])], dtype=np.float64).reshape(1, -1)
     standardized = np.divide(centered, np.where(scale == 0.0, 1.0, scale))
     denominator = max(standardized.shape[0] - 1, 1)
     with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
