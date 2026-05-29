@@ -785,14 +785,12 @@ final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelega
         switch touchType {
         case .pencil:
             return "pencil"
-        case .stylus:
-            return "stylus"
         case .direct:
             return "finger"
         case .indirect:
             return "indirect"
         case .indirectPointer:
-            return "indirectPointer"
+            return "unknown"
         @unknown default:
             return "unknown"
         }

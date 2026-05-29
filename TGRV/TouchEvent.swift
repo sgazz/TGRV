@@ -103,6 +103,7 @@ struct TouchEvent: Codable, Identifiable, Equatable {
     let azimuthAngle: Double?
     let touchType: TouchInputType
     let deviceType: DeviceType
+    let inputType: String
     let coalescedTouchesCount: Int
     let predictedTouchesCount: Int
     let experimentMode: String?
@@ -127,6 +128,7 @@ struct TouchSessionExport: Codable, Equatable {
     let startedAt: TimeInterval
     let exportedAt: TimeInterval
     let deviceType: DeviceType
+    let inputType: String
     let touchEventCount: Int
     let events: [TouchEvent]
 }

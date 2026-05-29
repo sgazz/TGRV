@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import logging
 import math
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
@@ -16,17 +18,185 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
+    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from touchprint_lab.live.telemetry_server import LiveTelemetryServer, TelemetrySnapshot
+from touchprint_lab.live.research_metrics import (
+    compute_groove_stability_metrics,
+    compute_pin_rhythm_metrics,
+    compute_pressure_fingerprint_metrics,
+)
 from touchprint_lab.utils.numeric import safe_nanstd
 
 logger = logging.getLogger(__name__)
 
+
+@dataclass(slots=True)
+class LiveLayoutState:
+    mode: str = "default"
+    panel_id: str | None = None
+
+
+class LivePanelCard(QFrame):
+    def __init__(
+        self,
+        dashboard: "LiveDashboardWidget",
+        panel_id: str,
+        title: str,
+        content_widget: QWidget,
+        *,
+        compact_min_height: int = 180,
+    ) -> None:
+        super().__init__()
+        self.dashboard = dashboard
+        self.panel_id = panel_id
+        self.title = title
+        self.content_widget = content_widget
+        self.compact_min_height = compact_min_height
+        self._focused = False
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setStyleSheet(
+            """
+            QFrame {
+                background: transparent;
+                border: none;
+            }
+            QLabel {
+                color: #f5f5f7;
+            }
+            """
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        self.header = QFrame()
+        self.header.setObjectName(f"LivePanelHeader_{panel_id}")
+        self.header.setStyleSheet(
+            """
+            QFrame {
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.10);
+                border-radius: 9px;
+            }
+            QLabel {
+                color: #f5f5f7;
+            }
+            """
+        )
+        header_layout = QHBoxLayout(self.header)
+        header_layout.setContentsMargins(10, 6, 10, 6)
+        header_layout.setSpacing(8)
+
+        self.title_label = QLabel(title)
+        self.title_label.setStyleSheet("font-size: 11px; font-weight: 600;")
+        header_layout.addWidget(self.title_label)
+        header_layout.addStretch(1)
+
+        self.zoom_quarter_button = QToolButton()
+        self.zoom_quarter_button.setText("1/4")
+        self.zoom_quarter_button.setToolTip(f"Focus {title} to about one quarter of the live area")
+        self.zoom_quarter_button.clicked.connect(lambda: self.dashboard.focus_panel(self.panel_id, "quarter"))
+        self.zoom_quarter_button.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self.zoom_half_button = QToolButton()
+        self.zoom_half_button.setText("1/2")
+        self.zoom_half_button.setToolTip(f"Focus {title} to about one half of the live area")
+        self.zoom_half_button.clicked.connect(lambda: self.dashboard.focus_panel(self.panel_id, "half"))
+        self.zoom_half_button.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self.restore_button = QToolButton()
+        self.restore_button.setText("Restore")
+        self.restore_button.setToolTip("Restore the default live cockpit layout")
+        self.restore_button.clicked.connect(self.dashboard.restore_live_layout)
+        self.restore_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.restore_button.setVisible(False)
+
+        header_buttons = [self.zoom_quarter_button, self.zoom_half_button, self.restore_button]
+        for button in header_buttons:
+            button.setStyleSheet(
+                """
+                QToolButton {
+                    color: #f5f5f7;
+                    padding: 4px 8px;
+                    border-radius: 7px;
+                    background: rgba(255, 255, 255, 0.08);
+                    font-size: 10px;
+                }
+                QToolButton:hover {
+                    background: rgba(255, 255, 255, 0.16);
+                }
+                """
+            )
+            header_layout.addWidget(button)
+
+        self.body = QFrame()
+        self.body.setStyleSheet(
+            """
+            QFrame {
+                background: transparent;
+                border: none;
+            }
+            """
+        )
+        body_layout = QVBoxLayout(self.body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(0)
+        body_layout.addWidget(self.content_widget, 1)
+
+        layout.addWidget(self.header)
+        layout.addWidget(self.body, 1)
+        self._apply_state(False, "default")
+
+    def set_compact_mode(self, enabled: bool) -> None:
+        minimum_height = max(120, self.compact_min_height - 30) if enabled else self.compact_min_height
+        self.content_widget.setMinimumHeight(minimum_height)
+
+    def _apply_state(self, focused: bool, mode: str) -> None:
+        self._focused = focused
+        if focused:
+            self.title_label.setText(f"Focused: {self.title}")
+            self.title_label.setStyleSheet("font-size: 11px; font-weight: 700; color: #5ac8fa;")
+            self.zoom_quarter_button.setVisible(False)
+            self.zoom_half_button.setVisible(False)
+            self.restore_button.setVisible(True)
+            self.header.setStyleSheet(
+                """
+                QFrame {
+                    background: rgba(90, 200, 250, 0.14);
+                    border: 1px solid rgba(90, 200, 250, 0.58);
+                    border-radius: 9px;
+                }
+                QLabel {
+                    color: #f5f5f7;
+                }
+                """
+            )
+        else:
+            self.title_label.setText(self.title)
+            self.title_label.setStyleSheet("font-size: 11px; font-weight: 600;")
+            self.zoom_quarter_button.setVisible(True)
+            self.zoom_half_button.setVisible(True)
+            self.restore_button.setVisible(False)
+            self.header.setStyleSheet(
+                """
+                QFrame {
+                    background: rgba(255, 255, 255, 0.05);
+                    border: 1px solid rgba(255, 255, 255, 0.10);
+                    border-radius: 9px;
+                }
+                QLabel {
+                    color: #f5f5f7;
+                }
+                """
+            )
 
 class LiveDashboardWidget(QWidget):
     def __init__(self, live_server: LiveTelemetryServer, parent: QWidget | None = None):
@@ -34,6 +204,9 @@ class LiveDashboardWidget(QWidget):
         self.live_server = live_server
         self._plot_error_keys: set[str] = set()
         self._pin_highlight_token = 0
+        self._live_layout_state = LiveLayoutState()
+        self._panel_cards: dict[str, LivePanelCard] = {}
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         pg.setConfigOptions(antialias=True)
 
         self._build_ui()
@@ -74,6 +247,7 @@ class LiveDashboardWidget(QWidget):
 
         self.connection_chip = self._make_chip("disconnected")
         self.device_chip = self._make_chip("device: —")
+        self.input_chip = self._make_chip("input: —")
         self.sample_rate_chip = self._make_chip("sample rate: 0.00 Hz")
         self.session_chip = self._make_chip("session: —")
         self.export_chip = self._make_chip("export: live_only")
@@ -98,6 +272,7 @@ class LiveDashboardWidget(QWidget):
 
         status_layout.addWidget(self.connection_chip)
         status_layout.addWidget(self.device_chip)
+        status_layout.addWidget(self.input_chip)
         status_layout.addWidget(self.sample_rate_chip)
         status_layout.addWidget(self.session_chip)
         status_layout.addWidget(self.export_chip)
@@ -123,41 +298,12 @@ class LiveDashboardWidget(QWidget):
         self.control_message_label.setVisible(False)
         root_layout.addWidget(self.control_message_label)
 
-        self.stability_frame = QFrame()
-        self.stability_frame.setStyleSheet(
-            """
-            QFrame {
-                background: rgba(255, 255, 255, 0.04);
-                border: 1px solid rgba(255, 255, 255, 0.10);
-                border-radius: 10px;
-            }
-            QLabel {
-                color: #f5f5f7;
-            }
-            """
-        )
-        stability_layout = QHBoxLayout(self.stability_frame)
-        stability_layout.setContentsMargins(12, 8, 12, 8)
-        stability_layout.setSpacing(12)
-
-        self.drift_label = self._make_metric_chip("drift: —")
-        self.jitter_label = self._make_metric_chip("jitter: —")
-        self.stability_label = self._make_metric_chip("force/radius stability: —")
-        self.sample_health_label = self._make_metric_chip("sample-rate health: —")
-        stability_layout.addWidget(self.drift_label)
-        stability_layout.addWidget(self.jitter_label)
-        stability_layout.addWidget(self.stability_label)
-        stability_layout.addWidget(self.sample_health_label)
-        stability_layout.addStretch(1)
-
-        root_layout.addWidget(self.stability_frame)
-
-        self.pin_mirror_frame = QFrame()
-        self.pin_mirror_frame.setObjectName("LivePinMirror")
+        self.pin_mirror_frame = self.pin_rhythm_frame = QFrame()
+        self.pin_mirror_frame.setObjectName("LivePinRhythm")
         self.pin_mirror_frame.setMinimumHeight(260)
         self.pin_mirror_frame.setStyleSheet(
             """
-            #LivePinMirror {
+            #LivePinRhythm {
                 background: rgba(255, 255, 255, 0.04);
                 border: 1px solid rgba(255, 255, 255, 0.08);
                 border-radius: 10px;
@@ -172,29 +318,36 @@ class LiveDashboardWidget(QWidget):
         pin_layout.setSpacing(6)
 
         pin_header = QHBoxLayout()
-        pin_title = QLabel("PIN Mirror")
+        pin_title = QLabel("PIN Rhythm Strip")
         pin_title.setStyleSheet("font-weight: 600; font-size: 12px;")
-        self.pin_sequence_label = QLabel("PIN: _ _ _ _")
+        self.pin_sequence_label = QLabel("PIN: —")
         self.pin_sequence_label.setStyleSheet("font-family: Menlo, Monaco, monospace; font-size: 12px;")
         self.pin_sequence_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.pin_rhythm_score_label = QLabel("Consistency: —")
+        self.pin_rhythm_score_label.setStyleSheet("color: #c7c7cc; font-size: 11px;")
+        pin_header.addWidget(pin_title)
+        pin_header.addStretch(1)
+        pin_header.addWidget(self.pin_rhythm_score_label)
+        pin_header.addWidget(self.pin_sequence_label)
+        pin_layout.addLayout(pin_header)
+
+        self.pin_rhythm_bar_label = QLabel("| collecting... |")
+        self.pin_rhythm_bar_label.setStyleSheet("font-family: Menlo, Monaco, monospace; font-size: 12px; color: #5ac8fa;")
+        self.pin_rhythm_bar_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.pin_detail_label = QLabel("Waiting for PIN input")
         self.pin_detail_label.setStyleSheet("color: #c7c7cc; font-size: 11px;")
         self.pin_detail_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        pin_header.addWidget(pin_title)
-        pin_header.addStretch(1)
-        pin_header.addWidget(self.pin_sequence_label)
-        pin_layout.addLayout(pin_header)
-        pin_layout.addWidget(self.pin_detail_label)
-
         self.pin_feedback_label = QLabel("Action: —")
         self.pin_feedback_label.setStyleSheet("color: #c7c7cc; font-size: 11px;")
+        pin_layout.addWidget(self.pin_rhythm_bar_label)
+        pin_layout.addWidget(self.pin_detail_label)
         pin_layout.addWidget(self.pin_feedback_label)
 
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(8)
-        grid.setVerticalSpacing(8)
-        self.pin_cells: dict[str, QLabel] = {}
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(6)
+        self.pin_cells = {}
         pin_rows: list[list[str | None]] = [
             ["1", "2", "3"],
             ["4", "5", "6"],
@@ -205,7 +358,7 @@ class LiveDashboardWidget(QWidget):
             for column_index, value in enumerate(row):
                 if value is None:
                     spacer = QLabel("")
-                    spacer.setFixedSize(36, 32)
+                    spacer.setFixedSize(28, 24)
                     grid.addWidget(spacer, row_index, column_index)
                     continue
                 cell = self._make_pin_cell(value)
@@ -213,33 +366,133 @@ class LiveDashboardWidget(QWidget):
                 grid.addWidget(cell, row_index, column_index)
         pin_layout.addLayout(grid)
 
+        self.trajectory_plot = self._make_plot("Touch Trajectory", minimum_height=240)
+        self.force_plot = self._make_plot("Force / Radius Timeline", minimum_height=240)
+        self.signature_plot = self._make_plot("Signature Layer", minimum_height=240)
+        self.groove_plot = self._make_plot("Groove View", minimum_height=240)
+        self.phase_plot = self._make_plot("Phase Timeline", minimum_height=110)
 
-        plots_frame = QFrame()
-        plots_layout = QGridLayout(plots_frame)
-        plots_layout.setContentsMargins(0, 0, 0, 0)
-        plots_layout.setSpacing(8)
+        self.pressure_frame = QFrame()
+        self.pressure_frame.setMinimumHeight(260)
+        self.pressure_frame.setStyleSheet(
+            """
+            QFrame {
+                background: rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 10px;
+            }
+            QLabel {
+                color: #f5f5f7;
+            }
+            """
+        )
+        pressure_layout = QVBoxLayout(self.pressure_frame)
+        pressure_layout.setContentsMargins(10, 8, 10, 8)
+        pressure_layout.setSpacing(6)
+        pressure_title = QLabel("Pressure Fingerprint")
+        pressure_title.setStyleSheet("font-weight: 600; font-size: 12px;")
+        pressure_layout.addWidget(pressure_title)
+        self.pressure_hist_plot = self._make_plot("Pressure Histogram", minimum_height=120)
+        pressure_layout.addWidget(self.pressure_hist_plot)
+        self.pressure_summary_label = QLabel("Collecting...")
+        self.pressure_summary_label.setStyleSheet("font-family: Menlo, Monaco, monospace; font-size: 11px;")
+        self.pressure_summary_label.setWordWrap(True)
+        pressure_layout.addWidget(self.pressure_summary_label)
+        self.pressure_detail_label = QLabel("Force: —  Median: —  Std Dev: —  Radius Stability: —")
+        self.pressure_detail_label.setStyleSheet("color: #c7c7cc; font-size: 11px;")
+        self.pressure_detail_label.setWordWrap(True)
+        pressure_layout.addWidget(self.pressure_detail_label)
 
-        card_height = 260
-        self.trajectory_plot = self._make_plot("Touch Trajectory", minimum_height=card_height)
-        self.force_plot = self._make_plot("Force / Radius Timeline", minimum_height=card_height)
-        self.signature_plot = self._make_plot("Signature Layer", minimum_height=card_height)
-        self.groove_plot = self._make_plot("Groove View", minimum_height=card_height)
-        self.phase_plot = self._make_plot("Phase Timeline", minimum_height=card_height)
-        self.pin_mirror_plot = self.pin_mirror_frame
+        self.groove_stability_frame = QFrame()
+        self.groove_stability_frame.setMinimumHeight(260)
+        self.groove_stability_frame.setStyleSheet(
+            """
+            QFrame {
+                background: rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 10px;
+            }
+            QLabel {
+                color: #f5f5f7;
+            }
+            """
+        )
+        groove_layout = QVBoxLayout(self.groove_stability_frame)
+        groove_layout.setContentsMargins(10, 8, 10, 8)
+        groove_layout.setSpacing(6)
+        groove_title = QLabel("Groove Stability")
+        groove_title.setStyleSheet("font-weight: 600; font-size: 12px;")
+        groove_layout.addWidget(groove_title)
+        self.groove_stability_score_label = QLabel("Collecting...")
+        self.groove_stability_score_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.groove_stability_score_label.setStyleSheet("font-size: 22px; font-weight: 700; color: #5ac8fa;")
+        groove_layout.addWidget(self.groove_stability_score_label)
+        self.groove_stability_bar = QProgressBar()
+        self.groove_stability_bar.setRange(0, 100)
+        self.groove_stability_bar.setValue(0)
+        self.groove_stability_bar.setTextVisible(True)
+        self.groove_stability_bar.setFormat("%p%")
+        self.groove_stability_bar.setStyleSheet(
+            """
+            QProgressBar {
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.10);
+                border-radius: 8px;
+                height: 18px;
+                color: #f5f5f7;
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                background: #5ac8fa;
+                border-radius: 8px;
+            }
+            """
+        )
+        groove_layout.addWidget(self.groove_stability_bar)
+        self.groove_stability_detail_label = QLabel("Trajectory: —  Force: —  Timing: —  Layers: —")
+        self.groove_stability_detail_label.setStyleSheet("color: #c7c7cc; font-size: 11px;")
+        self.groove_stability_detail_label.setWordWrap(True)
+        groove_layout.addWidget(self.groove_stability_detail_label)
+        self.groove_stability_status_label = QLabel("Waiting for live data")
+        self.groove_stability_status_label.setStyleSheet("color: #c7c7cc; font-size: 11px;")
+        groove_layout.addWidget(self.groove_stability_status_label)
 
-        plots_layout.addWidget(self.trajectory_plot, 0, 0)
-        plots_layout.addWidget(self.force_plot, 0, 1)
-        plots_layout.addWidget(self.signature_plot, 0, 2)
-        plots_layout.addWidget(self.groove_plot, 1, 0)
-        plots_layout.addWidget(self.phase_plot, 1, 1)
-        plots_layout.addWidget(self.pin_mirror_plot, 1, 2)
+        self.panel_cards = {
+            "trajectory": LivePanelCard(self, "trajectory", "Touch Trajectory", self.trajectory_plot, compact_min_height=220),
+            "force_radius": LivePanelCard(self, "force_radius", "Force / Radius Timeline", self.force_plot, compact_min_height=220),
+            "signature_layer": LivePanelCard(self, "signature_layer", "Signature Layer", self.signature_plot, compact_min_height=220),
+            "groove_view": LivePanelCard(self, "groove_view", "Groove View", self.groove_plot, compact_min_height=220),
+            "phase_timeline": LivePanelCard(self, "phase_timeline", "Phase Timeline", self.phase_plot, compact_min_height=130),
+            "pin_keyboard_mirror": LivePanelCard(self, "pin_keyboard_mirror", "PIN Keyboard Mirror", self.pin_mirror_frame, compact_min_height=220),
+            "pressure_fingerprint": LivePanelCard(self, "pressure_fingerprint", "Pressure Fingerprint", self.pressure_frame, compact_min_height=220),
+            "groove_stability": LivePanelCard(self, "groove_stability", "Groove Stability", self.groove_stability_frame, compact_min_height=220),
+        }
 
-        for column in range(3):
-            plots_layout.setColumnStretch(column, 1)
-        for row in range(2):
-            plots_layout.setRowStretch(row, 1)
+        self.panel_root = QFrame()
+        self.panel_root.setStyleSheet("QFrame { background: transparent; border: none; }")
+        self.panel_root_layout = QVBoxLayout(self.panel_root)
+        self.panel_root_layout.setContentsMargins(0, 0, 0, 0)
+        self.panel_root_layout.setSpacing(8)
 
-        root_layout.addWidget(plots_frame, 1)
+        self.focus_area = QFrame()
+        self.focus_area.setStyleSheet("QFrame { background: transparent; border: none; }")
+        self.focus_area_layout = QVBoxLayout(self.focus_area)
+        self.focus_area_layout.setContentsMargins(0, 0, 0, 0)
+        self.focus_area_layout.setSpacing(8)
+
+        self.overview_area = QFrame()
+        self.overview_area.setStyleSheet("QFrame { background: transparent; border: none; }")
+        self.overview_grid = QGridLayout(self.overview_area)
+        self.overview_grid.setContentsMargins(0, 0, 0, 0)
+        self.overview_grid.setHorizontalSpacing(8)
+        self.overview_grid.setVerticalSpacing(8)
+
+        self.panel_root_layout.addWidget(self.focus_area)
+        self.panel_root_layout.addWidget(self.overview_area, 1)
+        root_layout.addWidget(self.panel_root, 1)
+
+        self._install_live_shortcuts()
+        self._apply_live_layout()
 
         self.debug_panel = QFrame()
         self.debug_panel.setVisible(False)
@@ -343,7 +596,7 @@ class LiveDashboardWidget(QWidget):
     def _make_pin_cell(self, text: str) -> QLabel:
         cell = QLabel(text)
         cell.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        cell.setFixedSize(40, 36)
+        cell.setFixedSize(36, 32)
         cell.setStyleSheet(
             """
             QLabel {
@@ -398,15 +651,10 @@ class LiveDashboardWidget(QWidget):
         self.pin_feedback_label.setStyleSheet(f"color: {color}; font-size: 11px;")
 
     def _make_plot(self, title: str, minimum_height: int = 240) -> pg.PlotWidget:
-        plot = pg.PlotWidget(title=title)
+        plot = pg.PlotWidget()
         plot.setMinimumHeight(minimum_height)
         plot.setBackground("#0f1014")
         plot.showGrid(x=True, y=True, alpha=0.18)
-        plot.getPlotItem().titleLabel.setText(title, size="12pt")
-        plot.getPlotItem().titleLabel.setText(
-            f'<span style="color:#f5f5f7;">{title}</span>',
-            size="12pt",
-        )
         plot.getPlotItem().getAxis("left").setPen(pg.mkPen("#8e8e93"))
         plot.getPlotItem().getAxis("bottom").setPen(pg.mkPen("#8e8e93"))
         return plot
@@ -417,6 +665,98 @@ class LiveDashboardWidget(QWidget):
         self.timer.timeout.connect(self.refresh)
         self.timer.start()
 
+    def _install_live_shortcuts(self) -> None:
+        self._shortcuts: list[QShortcut] = []
+
+        def register(sequence: str, callback) -> None:
+            shortcut = QShortcut(QKeySequence(sequence), self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(callback)
+            self._shortcuts.append(shortcut)
+
+        register("Escape", self.restore_live_layout)
+        for sequence, panel_id in [
+            ("Ctrl+1", "trajectory"),
+            ("Meta+1", "trajectory"),
+            ("Ctrl+2", "force_radius"),
+            ("Meta+2", "force_radius"),
+            ("Ctrl+3", "groove_view"),
+            ("Meta+3", "groove_view"),
+            ("Ctrl+4", "groove_stability"),
+            ("Meta+4", "groove_stability"),
+        ]:
+            register(sequence, lambda panel_id=panel_id: self.focus_panel(panel_id, "half"))
+
+    def focus_panel(self, panel_id: str, fraction: str) -> None:
+        if panel_id not in self.panel_cards:
+            return
+        mode = "quarter" if fraction == "quarter" else "half"
+        self._live_layout_state = LiveLayoutState(mode=mode, panel_id=panel_id)
+        self._apply_live_layout()
+
+    def restore_live_layout(self) -> None:
+        self._live_layout_state = LiveLayoutState()
+        self._apply_live_layout()
+
+    def _clear_layout(self, layout: QGridLayout | QHBoxLayout | QVBoxLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+
+    def _apply_live_layout(self) -> None:
+        state = self._live_layout_state
+        focused_panel = self.panel_cards.get(state.panel_id) if state.panel_id else None
+
+        for card in self.panel_cards.values():
+            card.set_compact_mode(state.mode != "default")
+            card._apply_state(card is focused_panel, state.mode)
+
+        self._clear_layout(self.focus_area_layout)
+        self._clear_layout(self.overview_grid)
+
+        default_positions = {
+            "trajectory": (0, 0),
+            "force_radius": (0, 1),
+            "signature_layer": (0, 2),
+            "groove_view": (0, 3),
+            "phase_timeline": (1, 0),
+            "pin_keyboard_mirror": (1, 1),
+            "pressure_fingerprint": (1, 2),
+            "groove_stability": (1, 3),
+        }
+
+        if focused_panel is None or state.mode == "default":
+            self.focus_area.setVisible(False)
+            self.panel_root_layout.setStretch(0, 0)
+            self.panel_root_layout.setStretch(1, 1)
+            for panel_id, card in self.panel_cards.items():
+                row, column = default_positions[panel_id]
+                self.overview_grid.addWidget(card, row, column)
+            for column in range(4):
+                self.overview_grid.setColumnStretch(column, 1)
+            for row in range(2):
+                self.overview_grid.setRowStretch(row, 1)
+            return
+
+        self.focus_area.setVisible(True)
+        self.focus_area_layout.addWidget(focused_panel)
+        focus_stretch = 1 if state.mode == "quarter" else 2
+        overview_stretch = 3 if state.mode == "quarter" else 2
+        self.panel_root_layout.setStretch(0, focus_stretch)
+        self.panel_root_layout.setStretch(1, overview_stretch)
+
+        for panel_id, card in self.panel_cards.items():
+            if card is focused_panel:
+                continue
+            row, column = default_positions[panel_id]
+            self.overview_grid.addWidget(card, row, column)
+        for column in range(4):
+            self.overview_grid.setColumnStretch(column, 1)
+        for row in range(2):
+            self.overview_grid.setRowStretch(row, 1)
+
     def refresh(self) -> None:
         snapshot = self.live_server.snapshot()
         self._apply_snapshot(snapshot)
@@ -426,6 +766,7 @@ class LiveDashboardWidget(QWidget):
             active_session = next((session for session in snapshot.sessions if session.get("sessionId") == snapshot.active_session_id), None)
             self.connection_chip.setText(snapshot.connection_status)
             self.device_chip.setText(f"device: {(active_session or {}).get('deviceType', snapshot.export_summary.get('deviceType', '—')) or '—'}")
+            self.input_chip.setText(f"Input: {self._pretty_input_mode((active_session or {}).get('inputType', snapshot.export_summary.get('inputType', 'unknown')))}")
             self.sample_rate_chip.setText(f"sample rate: {snapshot.sample_rate_hz:.2f} Hz")
             self.session_chip.setText(f"session: {self._short_session_id(snapshot.active_session_id)}")
             self.export_chip.setText(f"export: {snapshot.export_status}")
@@ -447,6 +788,10 @@ class LiveDashboardWidget(QWidget):
             "port": snapshot.port,
             "suggestedLanIp": snapshot.suggested_lan_ip,
             "activeSessionId": snapshot.active_session_id,
+            "inputType": (next((session for session in snapshot.sessions if session.get("sessionId") == snapshot.active_session_id), {}) or {}).get(
+                "inputType",
+                (snapshot.export_summary or {}).get("inputType", "unknown"),
+            ),
             "eventCount": snapshot.event_count,
             "touchCount": snapshot.touch_count,
             "tapCount": snapshot.tap_count,
@@ -472,8 +817,9 @@ class LiveDashboardWidget(QWidget):
         )
         self.debug_status_box.setPlainText(json.dumps(diagnostics, indent=2, sort_keys=True))
         self._update_debug_ips(snapshot)
-        self._update_stability_panel(snapshot)
-        self._update_pin_mirror(snapshot)
+        self._update_pin_rhythm_panel(snapshot)
+        self._update_pressure_fingerprint(snapshot)
+        self._update_groove_stability(snapshot)
 
     def _update_control_message(self, snapshot: TelemetrySnapshot) -> None:
         message = snapshot.control_message
@@ -515,7 +861,7 @@ class LiveDashboardWidget(QWidget):
         self._render_phase_timeline(times, phases, events)
 
     def _clear_plots(self) -> None:
-        for plot in [self.trajectory_plot, self.force_plot, self.signature_plot, self.groove_plot, self.phase_plot]:
+        for plot in [self.trajectory_plot, self.force_plot, self.signature_plot, self.groove_plot, self.phase_plot, self.pressure_hist_plot]:
             plot.clear()
 
     def _render_trajectory(self, xs: np.ndarray, ys: np.ndarray) -> None:
@@ -620,6 +966,138 @@ class LiveDashboardWidget(QWidget):
         plot.hideAxis("left")
         plot.getAxis("bottom").setStyle(tickTextOffset=4)
 
+    def _update_pin_rhythm_panel(self, snapshot: TelemetrySnapshot) -> None:
+        active_session = next((session for session in snapshot.sessions if session.get("sessionId") == snapshot.active_session_id), None)
+        events = (active_session or {}).get("events", [])
+        metrics = compute_pin_rhythm_metrics(events)
+
+        if metrics.collecting:
+            self.pin_sequence_label.setText("PIN: —")
+            self.pin_rhythm_score_label.setText("Consistency: collecting…")
+            self.pin_rhythm_bar_label.setText(metrics.bar_text)
+            self.pin_detail_label.setText("Waiting for PIN input")
+            self.pin_feedback_label.setText("Action: —")
+            self.pin_feedback_label.setStyleSheet("color: #c7c7cc; font-size: 11px;")
+            self._apply_pin_highlight(None)
+            return
+
+        sequence_display = metrics.digit_text.replace("PIN: ", "")
+        self.pin_sequence_label.setText(metrics.digit_text)
+        self.pin_rhythm_score_label.setText(f"Consistency: {metrics.consistency_score:.0f}%")
+        self.pin_rhythm_bar_label.setText(metrics.bar_text)
+        if metrics.average_interval_ms is not None:
+            detail_text = (
+                f"Avg {metrics.average_interval_ms:.0f}ms • Var {metrics.interval_variance_ms:.1f} • Seq {self._short_session_id(metrics.sequence_id)}"
+            )
+        else:
+            detail_text = f"Seq {self._short_session_id(metrics.sequence_id)}"
+
+        latest = None
+        for event in reversed([event for event in events if event.get("messageType") == "touch_event"]):
+            if event.get("pinSequenceId") == metrics.sequence_id or str(event.get("pinSequenceId") or "__unknown__") == metrics.sequence_id:
+                latest = event
+                break
+        latest_digit = latest.get("digit") if latest else None
+        latest_index = latest.get("digitIndex") if latest else None
+        self.pin_detail_label.setText(
+            f"Digit {latest_digit if latest_digit is not None else '—'} • Index {latest_index if latest_index is not None else '—'} • {detail_text}"
+        )
+        self.pin_feedback_label.setText(f"Action: rhythm • {sequence_display}")
+        self.pin_feedback_label.setStyleSheet("color: #5ac8fa; font-size: 11px;")
+        if latest and isinstance(latest.get("digit"), str) and latest.get("digit") in self.pin_cells:
+            self._pin_highlight_token += 1
+            token = self._pin_highlight_token
+            self._apply_pin_highlight(str(latest.get("digit")))
+            QTimer.singleShot(320, lambda token=token: self._clear_pin_highlight(token))
+        else:
+            self._apply_pin_highlight(None)
+
+    def _update_pressure_fingerprint(self, snapshot: TelemetrySnapshot) -> None:
+        active_session = next((session for session in snapshot.sessions if session.get("sessionId") == snapshot.active_session_id), None)
+        events = (active_session or {}).get("events", [])
+        metrics = compute_pressure_fingerprint_metrics(events)
+        plot = self.pressure_hist_plot
+        plot.clear()
+
+        if metrics.collecting:
+            self.pressure_summary_label.setText("Collecting...")
+            self.pressure_detail_label.setText("Force: —  Median: —  Std Dev: —  Radius Stability: —")
+            return
+
+        counts = metrics.histogram_counts
+        edges = metrics.histogram_edges
+        if counts.size > 0 and edges.size > 0:
+            x_positions = edges[:-1]
+            widths = np.diff(edges)
+            plot.addItem(
+                pg.BarGraphItem(
+                    x=x_positions,
+                    height=counts,
+                    width=widths,
+                    brush=pg.mkBrush(90, 200, 250, 180),
+                    pen=pg.mkPen(None),
+                )
+            )
+        plot.setLabel("left", "Count")
+        plot.setLabel("bottom", "Force bins")
+
+        summary = (
+            f"Mean {metrics.mean_force:.3f} • Median {metrics.median_force:.3f} • Std {metrics.std_force:.3f}"
+        )
+        self.pressure_summary_label.setText(summary)
+        if metrics.radius_stability is not None:
+            self.pressure_detail_label.setText(
+                f"Force Var {metrics.force_variance:.3f} • Radius Var {metrics.radius_variance:.3f} • Radius Stability {metrics.radius_stability:.0f}%"
+            )
+        else:
+            self.pressure_detail_label.setText("Radius Stability: collecting…")
+
+    def _update_groove_stability(self, snapshot: TelemetrySnapshot) -> None:
+        active_session = next((session for session in snapshot.sessions if session.get("sessionId") == snapshot.active_session_id), None)
+        events = (active_session or {}).get("events", [])
+        metrics = compute_groove_stability_metrics(events)
+
+        if metrics.collecting or metrics.overall_score is None:
+            self.groove_stability_score_label.setText("Collecting...")
+            self.groove_stability_bar.setValue(0)
+            self.groove_stability_detail_label.setText("Trajectory: —  Force: —  Timing: —  Layers: —")
+            self.groove_stability_status_label.setText("Waiting for enough live events")
+            return
+
+        score = int(round(metrics.overall_score))
+        self.groove_stability_score_label.setText(f"{score}%")
+        self.groove_stability_bar.setValue(max(0, min(100, score)))
+        self.groove_stability_detail_label.setText(
+            f"Trajectory: {metrics.trajectory_score:.0f}%  Force: {metrics.force_score:.0f}%  Timing: {metrics.timing_score:.0f}%  Layers: {metrics.layer_score:.0f}%"
+        )
+        if score >= 80:
+            status_text = "Stable"
+            color = "#34c759"
+        elif score >= 50:
+            status_text = "Moderate"
+            color = "#ff9f0a"
+        else:
+            status_text = "Unstable"
+            color = "#ff453a"
+        self.groove_stability_score_label.setStyleSheet(f"font-size: 22px; font-weight: 700; color: {color};")
+        self.groove_stability_bar.setStyleSheet(
+            f"""
+            QProgressBar {{
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.10);
+                border-radius: 8px;
+                height: 18px;
+                color: #f5f5f7;
+                text-align: center;
+            }}
+            QProgressBar::chunk {{
+                background: {color};
+                border-radius: 8px;
+            }}
+            """
+        )
+        self.groove_stability_status_label.setText(f"{status_text}: {score}%")
+
     def _update_stability_panel(self, snapshot: TelemetrySnapshot) -> None:
         active_session = next((session for session in snapshot.sessions if session.get("sessionId") == snapshot.active_session_id), None)
         events = [event for event in (active_session or {}).get("events", []) if event.get("messageType") == "touch_event"]
@@ -647,63 +1125,6 @@ class LiveDashboardWidget(QWidget):
         self.jitter_label.setText(f"jitter: {jitter_level:.3f}")
         self.stability_label.setText(f"force/radius stability: {((force_stability + radius_stability) / 2.0):.3f}")
         self.sample_health_label.setText(f"sample-rate health: {sample_rate_health:.2f}")
-
-    def _update_pin_mirror(self, snapshot: TelemetrySnapshot) -> None:
-        active_session = next((session for session in snapshot.sessions if session.get("sessionId") == snapshot.active_session_id), None)
-        events = [
-            event
-            for event in (active_session or {}).get("events", [])
-            if event.get("messageType") == "touch_event"
-            and (
-                event.get("experimentMode") == "pin_entry"
-                or event.get("digit") is not None
-                or event.get("keypadButtonId") is not None
-                or event.get("isPinSubmit") is not None
-                or event.get("isPinClear") is not None
-            )
-        ]
-        if not events:
-            self.pin_sequence_label.setText("PIN: _ _ _ _")
-            self.pin_detail_label.setText("Waiting for PIN input")
-            self.pin_feedback_label.setText("Action: —")
-            self.pin_feedback_label.setStyleSheet("color: #c7c7cc; font-size: 11px;")
-            self._apply_pin_highlight(None)
-            return
-
-        latest = events[-1]
-        entered_pin = str(latest.get("enteredPinSoFar") or "")
-        sequence_id = str(latest.get("pinSequenceId") or "—")
-        digit = latest.get("digit")
-        digit_index = latest.get("digitIndex")
-        is_submit = bool(latest.get("isPinSubmit"))
-        is_clear = bool(latest.get("isPinClear"))
-
-        self.pin_sequence_label.setText(f"PIN: {self._formatted_pin_sequence(entered_pin)}")
-        self.pin_detail_label.setText(
-            f"Digit {digit if digit is not None else '—'} • Index {digit_index if digit_index is not None else '—'} • Seq {self._short_session_id(sequence_id)}"
-        )
-
-        if is_clear:
-            self.pin_feedback_label.setText("Action: clear")
-            self.pin_feedback_label.setStyleSheet("color: #ff9f0a; font-size: 11px;")
-            self._apply_pin_highlight(None)
-            return
-
-        if is_submit:
-            self.pin_feedback_label.setText(f"Action: submit • {self._formatted_pin_sequence(entered_pin)}")
-            self.pin_feedback_label.setStyleSheet("color: #34c759; font-size: 11px;")
-            self._apply_pin_highlight(None)
-            return
-
-        self.pin_feedback_label.setText("Action: digit")
-        self.pin_feedback_label.setStyleSheet("color: #c7c7cc; font-size: 11px;")
-        if isinstance(digit, str) and digit in self.pin_cells:
-            self._pin_highlight_token += 1
-            token = self._pin_highlight_token
-            self._apply_pin_highlight(digit)
-            QTimer.singleShot(320, lambda token=token: self._clear_pin_highlight(token))
-        else:
-            self._apply_pin_highlight(None)
 
 
     def _formatted_pin_sequence(self, entered_pin: str, length: int = 4) -> str:
@@ -752,6 +1173,16 @@ class LiveDashboardWidget(QWidget):
         if len(session_id) <= 10:
             return session_id
         return f"{session_id[:4]}…{session_id[-4:]}"
+
+    def _pretty_input_mode(self, raw_input_type: str | None) -> str:
+        normalized = str(raw_input_type or "unknown").strip().lower()
+        if normalized == "finger":
+            return "Finger"
+        if normalized == "pencil":
+            return "Pencil"
+        if normalized in {"mixed", "indirect", "indirectpointer"}:
+            return "Mixed"
+        return "Unknown"
 
     def _normalize_series(self, values: np.ndarray) -> np.ndarray:
         if len(values) == 0:

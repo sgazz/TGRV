@@ -24,6 +24,7 @@ SESSION_REQUIRED_KEYS: tuple[str, ...] = (
     "startedAt",
     "exportedAt",
     "deviceType",
+    "inputType",
     "sessionType",
     "participantId",
     "experimentId",
@@ -63,6 +64,7 @@ EVENT_REQUIRED_KEYS: tuple[str, ...] = (
     "azimuthAngle",
     "touchType",
     "deviceType",
+    "inputType",
     "coalescedTouchesCount",
     "predictedTouchesCount",
 )
@@ -72,6 +74,7 @@ FEATURE_TOP_LEVEL_KEYS: tuple[str, ...] = (
     "sessionId",
     "userId",
     "deviceType",
+    "inputType",
     "metadata",
 )
 
@@ -188,6 +191,7 @@ class SyntheticTouchGenerator:
             started_at=started_at,
             exported_at=exported_at,
             device_type=device_type,
+            input_type=input_modality if input_modality in {"finger", "pencil"} else "mixed",
             session_type=session_type,
             touch_event_count=len(events),
             participant_id=participant_id,
@@ -484,6 +488,7 @@ class SyntheticTouchGenerator:
             azimuth_angle=azimuth_angle,
             touch_type=touch_type,
             device_type=device_type,
+            input_type=touch_type if touch_type in {"finger", "pencil", "indirect"} else "unknown",
             coalesced_touches_count=coalesced_touches_count,
             predicted_touches_count=predicted_touches_count,
         )

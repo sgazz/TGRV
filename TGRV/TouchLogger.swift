@@ -177,7 +177,7 @@ final class TouchLogger {
                     coalescedCount: coalescedTouches.count,
                     predictedCount: predictedTouches.count,
                     deviceType: Self.currentDeviceTypeString,
-                    inputType: inputTypeOverride ?? Self.touchInputString(for: touch.type),
+                    inputType: inputTypeOverride ?? Self.inputTypeString(for: touch.type),
                     exportExpected: true,
                     pinMetadata: pinMetadata
                 )
@@ -198,6 +198,7 @@ final class TouchLogger {
                 startedAt: SessionManager.shared.currentSessionStartedAt(),
                 exportedAt: Date().timeIntervalSince1970,
                 deviceType: Self.currentDeviceType,
+                inputType: Self.currentInputTypeForExport(events: events),
                 touchEventCount: events.count,
                 events: events
             )
@@ -322,6 +323,7 @@ final class TouchLogger {
             azimuthAngle: azimuthAngle,
             touchType: Self.touchInputType(for: touch.type),
             deviceType: deviceType,
+            inputType: Self.inputTypeString(for: touch.type),
             coalescedTouchesCount: coalescedCount,
             predictedTouchesCount: predictedCount,
             experimentMode: nil,
@@ -349,7 +351,7 @@ final class TouchLogger {
                 sampleIndex: sampleIndex,
                 sampleCount: sampleCount,
                 deviceType: Self.currentDeviceTypeString,
-                inputType: Self.touchInputString(for: touch.type),
+                inputType: Self.inputTypeString(for: touch.type),
                 exportExpected: true,
                 pinMetadata: nil
             )
@@ -395,6 +397,7 @@ final class TouchLogger {
             azimuthAngle: azimuthAngle,
             touchType: touchType,
             deviceType: deviceType,
+            inputType: Self.inputTypeString(for: touchType),
             coalescedTouchesCount: coalescedCount,
             predictedTouchesCount: predictedCount,
             experimentMode: pinMetadata?.experimentMode,
@@ -434,21 +437,49 @@ final class TouchLogger {
         }
     }
 
-    private static func touchInputString(for type: UITouch.TouchType) -> String {
+    private static func inputTypeString(for type: UITouch.TouchType) -> String {
         switch type {
         case .direct:
             return "finger"
         case .pencil:
             return "pencil"
-        case .stylus:
-            return "stylus"
         case .indirect:
             return "indirect"
         case .indirectPointer:
-            return "indirectPointer"
+            return "unknown"
         @unknown default:
             return "unknown"
         }
+    }
+
+    private static func inputTypeString(for type: TouchInputType) -> String {
+        switch type {
+        case .direct:
+            return "finger"
+        case .pencil:
+            return "pencil"
+        case .indirect:
+            return "indirect"
+        default:
+            return "unknown"
+        }
+    }
+
+    private static func currentInputTypeForExport(events: [TouchEvent]) -> String {
+        let observed = Set(events.map(\.inputType).filter { !$0.isEmpty && $0 != "unknown" })
+        if observed.isEmpty {
+            return "unknown"
+        }
+        if observed.count == 1, let only = observed.first {
+            return only
+        }
+        if observed.isSubset(of: ["finger"]) {
+            return "finger"
+        }
+        if observed.isSubset(of: ["pencil"]) {
+            return "pencil"
+        }
+        return "mixed"
     }
 
     private static var currentDeviceType: DeviceType {
