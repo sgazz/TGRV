@@ -19,6 +19,7 @@ It is **not** authentication software.
 - `touchprint_lab/` — Python 3.12+ analysis and study orchestration tool
 - `Touchprint Analyzer.command` — macOS launcher for the Python app
 - `requirements.txt` — Python dependencies for the analyzer
+- `docs/` — detailed project documentation
 
 ## iOS logger
 
@@ -86,3 +87,15 @@ Or double-click:
 - No authentication logic.
 - No neural networks or deep learning.
 - The design prioritizes reproducibility and inspectable experimental flow.
+
+## Documentation
+
+Full documentation lives in `docs/`:
+
+- `docs/README.md`
+- `docs/overview.md`
+- `docs/architecture.md`
+- `docs/data-model.md`
+- `docs/study-templates.md`
+- `docs/workflows.md`
+- `docs/setup.md`
