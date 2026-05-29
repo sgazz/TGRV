@@ -4,14 +4,17 @@ import json
 import logging
 import math
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import QTimer, Qt
-from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtCore import QTimer, Qt, QUrl
+from PyQt6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
+    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -26,6 +29,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from touchprint_lab.analyzer.human_likeness import HumanLikenessMetrics, compute_human_likeness_metrics
+from touchprint_lab.analyzer.human_likeness_calibration import run_human_likeness_calibration
+from touchprint_lab.analyzer.human_vs_synthetic_validation import run_human_vs_synthetic_validation
 from touchprint_lab.live.telemetry_server import LiveTelemetryServer, TelemetrySnapshot
 from touchprint_lab.live.research_metrics import (
     compute_groove_stability_metrics,
@@ -198,6 +204,346 @@ class LivePanelCard(QFrame):
                 """
             )
 
+
+class HumanLikenessDetailsDialog(QDialog):
+    def __init__(self, metrics: HumanLikenessMetrics, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Human-Likeness Details")
+        self.resize(560, 460)
+        self.setModal(False)
+        self._calibration_seed = 42
+        self._calibration_pdf_path: Path | None = None
+        self._current_session_id: str | None = None
+        self._current_events: list[dict[str, Any]] = []
+        self._current_last_timestamp: float | None = None
+        self.setStyleSheet(
+            """
+            QDialog {
+                background: #121317;
+            }
+            QLabel {
+                color: #f5f5f7;
+            }
+            """
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        header_row = QHBoxLayout()
+        headline = QLabel(self._headline_text(metrics))
+        headline.setStyleSheet("font-size: 14px; font-weight: 700; color: #5ac8fa;")
+        header_row.addWidget(headline)
+        header_row.addStretch(1)
+        self.evaluate_current_button = QPushButton("Evaluate Current Session")
+        self.evaluate_current_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.evaluate_current_button.clicked.connect(self._evaluate_current_session)
+        header_row.addWidget(self.evaluate_current_button)
+        self.run_calibration_button = QPushButton("Run Calibration")
+        self.run_calibration_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.run_calibration_button.clicked.connect(self._run_calibration)
+        header_row.addWidget(self.run_calibration_button)
+        self.preview_pdf_button = QPushButton("Preview Calibration PDF")
+        self.preview_pdf_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.preview_pdf_button.setEnabled(False)
+        self.preview_pdf_button.clicked.connect(self._preview_calibration_pdf)
+        header_row.addWidget(self.preview_pdf_button)
+        self.run_validation_button = QPushButton("Run Human vs Synthetic Validation")
+        self.run_validation_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.run_validation_button.clicked.connect(self._run_human_vs_synthetic_validation)
+        header_row.addWidget(self.run_validation_button)
+        layout.addLayout(header_row)
+
+        disclaimer = QLabel("Research metric — not definitive bot detection.")
+        disclaimer.setStyleSheet("font-size: 11px; color: #8e8e93;")
+        layout.addWidget(disclaimer)
+
+        self.current_header_label = QLabel()
+        self.current_header_label.setStyleSheet("font-size: 12px; font-weight: 600;")
+        self.current_body_label = QLabel()
+        self.current_body_label.setStyleSheet("font-size: 11px; color: #c7c7cc;")
+        self.current_body_label.setWordWrap(True)
+        layout.addWidget(self.current_header_label)
+        layout.addWidget(self.current_body_label)
+
+        self.synthetic_header_label = QLabel()
+        self.synthetic_header_label.setStyleSheet("font-size: 12px; font-weight: 600;")
+        self.synthetic_body_label = QLabel()
+        self.synthetic_body_label.setStyleSheet("font-size: 11px; color: #c7c7cc;")
+        self.synthetic_body_label.setWordWrap(True)
+        layout.addWidget(self.synthetic_header_label)
+        layout.addWidget(self.synthetic_body_label)
+
+        self.validation_header_label = QLabel()
+        self.validation_header_label.setStyleSheet("font-size: 12px; font-weight: 600;")
+        self.validation_body_label = QLabel()
+        self.validation_body_label.setStyleSheet("font-size: 11px; color: #c7c7cc;")
+        self.validation_body_label.setWordWrap(True)
+        layout.addWidget(self.validation_header_label)
+        layout.addWidget(self.validation_body_label)
+
+        subscore_lines = [
+            ("Timing Naturalness", metrics.timing_naturalness),
+            ("Jitter Naturalness", metrics.jitter_naturalness),
+            ("Pressure Naturalness", metrics.pressure_naturalness),
+            ("Release Dynamics", metrics.release_dynamics),
+            ("Repetition Diversity", metrics.repetition_diversity),
+            ("Signal Quality", metrics.signal_quality),
+        ]
+        for label, value in subscore_lines:
+            row = QLabel(f"{label}: {self._format_score(value)}")
+            row.setStyleSheet("font-family: Menlo, Monaco, monospace; font-size: 11px;")
+            layout.addWidget(row)
+
+        interval_text = ", ".join(f"{value:.0f}ms" for value in metrics.recent_intervals_ms[-8:])
+        intervals = QLabel(f"Recent PIN intervals: {interval_text if interval_text else 'collecting…'}")
+        intervals.setStyleSheet("font-family: Menlo, Monaco, monospace; font-size: 11px; color: #c7c7cc;")
+        intervals.setWordWrap(True)
+        layout.addWidget(intervals)
+
+        variance = QLabel(
+            "Variance: "
+            f"force={self._format_optional(metrics.force_variance)}  "
+            f"radius={self._format_optional(metrics.radius_variance)}"
+        )
+        variance.setStyleSheet("font-family: Menlo, Monaco, monospace; font-size: 11px; color: #c7c7cc;")
+        layout.addWidget(variance)
+
+        flags = QPlainTextEdit()
+        flags.setReadOnly(True)
+        flags.setStyleSheet(
+            """
+            QPlainTextEdit {
+                background: #0f1014;
+                color: #f5f5f7;
+                border: 1px solid rgba(255, 255, 255, 0.10);
+                border-radius: 8px;
+                font-family: Menlo, Monaco, monospace;
+                font-size: 11px;
+            }
+            """
+        )
+        text_lines = ["Explanation flags:"]
+        if metrics.explanation_flags:
+            text_lines.extend([f"- {value}" for value in metrics.explanation_flags])
+        else:
+            text_lines.append("- collecting live signal")
+        if metrics.suspicious_flags:
+            text_lines.append("")
+            text_lines.append("Suspicious-pattern flags:")
+            text_lines.extend([f"- {value}" for value in metrics.suspicious_flags])
+        flags.setPlainText("\n".join(text_lines))
+        layout.addWidget(flags, 1)
+
+        self._reset_results()
+
+    def _headline_text(self, metrics: HumanLikenessMetrics) -> str:
+        if metrics.human_likeness_score is None:
+            return "Human-Likeness: collecting…"
+        suspicion = self._suspicion_level(metrics.automation_suspicion_score)
+        return (
+            f"Human-Likeness {metrics.human_likeness_score:.0f}  |  "
+            f"Suspicion {suspicion}  |  Confidence {metrics.confidence.title()}"
+        )
+
+    def _format_score(self, value: float | None) -> str:
+        return "collecting…" if value is None else f"{value:.1f}/100"
+
+    def _format_optional(self, value: float | None) -> str:
+        return "—" if value is None else f"{value:.4f}"
+
+    def _suspicion_level(self, value: float | None) -> str:
+        if value is None:
+            return "Collecting"
+        if value >= 67.0:
+            return "High"
+        if value >= 34.0:
+            return "Medium"
+        return "Low"
+
+    def sync_live_context(
+        self,
+        *,
+        session_id: str | None,
+        events: list[dict[str, Any]],
+        last_timestamp: float | None,
+    ) -> None:
+        if self._current_session_id != session_id:
+            self._current_session_id = session_id
+            self._reset_results()
+        self._current_events = [dict(event) for event in events]
+        self._current_last_timestamp = last_timestamp
+        if len(self._current_events) < 6:
+            self._set_section(
+                "current",
+                "collecting",
+                "Not enough live input to evaluate current session.",
+                "#ff9f0a",
+            )
+
+    def evaluate_current_session_now(self) -> None:
+        self._evaluate_current_session()
+
+    def _reset_results(self) -> None:
+        self._calibration_pdf_path = None
+        self.preview_pdf_button.setEnabled(False)
+        self._set_section("current", "not run", "Evaluate Current Session to analyze buffered live telemetry.", "#c7c7cc")
+        self._set_section(
+            "synthetic",
+            "not run",
+            "Run Calibration uses generated synthetic scenarios, not current live input.",
+            "#c7c7cc",
+        )
+        self._set_section("validation", "not run", "Run Human vs Synthetic Validation to compare dataset sessions.", "#c7c7cc")
+
+    def _set_section(self, section: str, state: str, body: str, color: str) -> None:
+        title_map = {
+            "current": "A. Current Live Session",
+            "synthetic": "B. Synthetic Calibration",
+            "validation": "C. Human vs Synthetic Validation",
+        }
+        header = f"{title_map[section]} — {state}"
+        if section == "current":
+            self.current_header_label.setText(header)
+            self.current_header_label.setStyleSheet(f"font-size: 12px; font-weight: 600; color: {color};")
+            self.current_body_label.setText(body)
+        elif section == "synthetic":
+            self.synthetic_header_label.setText(header)
+            self.synthetic_header_label.setStyleSheet(f"font-size: 12px; font-weight: 600; color: {color};")
+            self.synthetic_body_label.setText(body)
+        else:
+            self.validation_header_label.setText(header)
+            self.validation_header_label.setStyleSheet(f"font-size: 12px; font-weight: 600; color: {color};")
+            self.validation_body_label.setText(body)
+
+    def _evaluate_current_session(self) -> None:
+        touch_events = [event for event in self._current_events if event.get("messageType") == "touch_event"]
+        if len(touch_events) < 6:
+            self._set_section(
+                "current",
+                "collecting",
+                "Not enough live input to evaluate current session.",
+                "#ff9f0a",
+            )
+            return
+
+        metrics = compute_human_likeness_metrics(touch_events)
+        if metrics.human_likeness_score is None:
+            self._set_section(
+                "current",
+                "collecting",
+                "Not enough live input to evaluate current session.",
+                "#ff9f0a",
+            )
+            return
+
+        pin_events = [event for event in touch_events if event.get("digit") is not None]
+        last_timestamp = self._current_last_timestamp
+        if last_timestamp is None and touch_events:
+            last_timestamp = float(touch_events[-1].get("timestamp", 0.0))
+        body = (
+            f"Current session evaluation complete\n"
+            f"Session: {self._current_session_id or '—'}\n"
+            f"Score: {metrics.human_likeness_score:.1f}  |  Suspicion: {metrics.automation_suspicion_score:.1f}  |  Confidence: {metrics.confidence.title()}\n"
+            f"Events analyzed: {len(touch_events)}  |  PIN digit events: {len(pin_events)}\n"
+            f"Last timestamp: {last_timestamp if last_timestamp is not None else '—'}"
+        )
+        self._set_section("current", "completed", body, "#34c759")
+
+    def _run_calibration(self) -> None:
+        self.run_calibration_button.setEnabled(False)
+        self.run_calibration_button.setText("Running…")
+        self.preview_pdf_button.setEnabled(False)
+        self._calibration_pdf_path = None
+        self._set_section("synthetic", "collecting", "Running synthetic calibration scenarios…", "#ff9f0a")
+        try:
+            report = run_human_likeness_calibration(seed=self._calibration_seed)
+            summary = report.summary
+            pdf_path_raw = report.files.get("pdfReport")
+            pdf_path = Path(str(pdf_path_raw)) if pdf_path_raw else None
+            pdf_warning = report.files.get("pdfWarning")
+            pdf_exists = bool(pdf_path and pdf_path.exists())
+            if pdf_exists:
+                self._calibration_pdf_path = pdf_path
+                self.preview_pdf_button.setEnabled(True)
+            pdf_text = f"PDF: {pdf_path}" if pdf_path else "PDF: not generated"
+            run_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            body = (
+                "Synthetic calibration complete\n"
+                "Uses generated synthetic scenarios, not current live input.\n"
+                f"Run: {run_time}\n"
+                f"Seed: {self._calibration_seed}\n"
+                f"Simulated human-like avg: {summary['averageHumanLikeScore']:.1f}\n"
+                f"Synthetic regular avg: {summary['averageSyntheticRegularScore']:.1f}\n"
+                f"Margin: {summary['separationMargin']:.1f}\n"
+                f"Detection rate: {summary['suspiciousPatternDetectionRate'] * 100.0:.0f}%\n"
+                f"Reports: {report.output_dir}\n"
+                f"{pdf_text}"
+            )
+            if not pdf_exists:
+                body += "\nCalibration completed, but PDF export failed."
+                self._set_section("synthetic", "completed", body, "#ff9f0a")
+            elif pdf_warning:
+                body += f"\nWarning: {pdf_warning}"
+                self._set_section("synthetic", "completed", body, "#ff9f0a")
+            else:
+                self._set_section("synthetic", "completed", body, "#34c759")
+        except Exception as error:
+            logger.exception("Human-likeness calibration failed")
+            self._set_section("synthetic", "failed", f"Synthetic calibration failed: {error}", "#ff453a")
+        finally:
+            self.run_calibration_button.setEnabled(True)
+            self.run_calibration_button.setText("Run Calibration")
+
+    def _preview_calibration_pdf(self) -> None:
+        if self._calibration_pdf_path is None or not self._calibration_pdf_path.exists():
+            self.preview_pdf_button.setEnabled(False)
+            self._set_section(
+                "synthetic",
+                "completed",
+                "Calibration completed, but PDF export failed.",
+                "#ff9f0a",
+            )
+            return
+        opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._calibration_pdf_path)))
+        if not opened:
+            self._set_section(
+                "synthetic",
+                "completed",
+                "PDF preview failed. Open manually:\n"
+                f"{self._calibration_pdf_path}",
+                "#ff9f0a",
+            )
+
+    def _run_human_vs_synthetic_validation(self) -> None:
+        self.run_validation_button.setEnabled(False)
+        self.run_validation_button.setText("Running…")
+        self._set_section("validation", "collecting", "Running human vs synthetic validation…", "#ff9f0a")
+        try:
+            report = run_human_vs_synthetic_validation()
+            summary = report.summary
+            body = (
+                "Human vs Synthetic validation complete\n"
+                f"Real avg {summary['realHumanAverageScore']:.1f} • "
+                f"Synthetic avg {summary['syntheticAverageScore']:.1f} • "
+                f"Margin {summary['separationMargin']:.1f} • "
+                f"False suspicious {summary['falseSuspiciousRate'] * 100.0:.0f}% • "
+                f"Detection {summary['suspiciousDetectionRate'] * 100.0:.0f}%\n"
+                f"{summary['message']}\n"
+                f"Reports: {report.output_dir}"
+            )
+            if summary.get("noRealSessions", False):
+                self._set_section("validation", "completed", body, "#ff9f0a")
+            else:
+                self._set_section("validation", "completed", body, "#34c759")
+        except Exception as error:
+            logger.exception("Human vs synthetic validation failed")
+            self._set_section("validation", "failed", f"Human vs synthetic validation failed: {error}", "#ff453a")
+        finally:
+            self.run_validation_button.setEnabled(True)
+            self.run_validation_button.setText("Run Human vs Synthetic Validation")
+
 class LiveDashboardWidget(QWidget):
     def __init__(self, live_server: LiveTelemetryServer, parent: QWidget | None = None):
         super().__init__(parent)
@@ -206,6 +552,8 @@ class LiveDashboardWidget(QWidget):
         self._pin_highlight_token = 0
         self._live_layout_state = LiveLayoutState()
         self._panel_cards: dict[str, LivePanelCard] = {}
+        self._latest_human_likeness_metrics: HumanLikenessMetrics | None = None
+        self._human_likeness_dialog: HumanLikenessDetailsDialog | None = None
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         pg.setConfigOptions(antialias=True)
 
@@ -370,7 +718,7 @@ class LiveDashboardWidget(QWidget):
         self.force_plot = self._make_plot("Force / Radius Timeline", minimum_height=240)
         self.signature_plot = self._make_plot("Signature Layer", minimum_height=240)
         self.groove_plot = self._make_plot("Groove View", minimum_height=240)
-        self.phase_plot = self._make_plot("Phase Timeline", minimum_height=110)
+        self.phase_plot = self._make_plot("Phase Timeline", minimum_height=240)
 
         self.pressure_frame = QFrame()
         self.pressure_frame.setMinimumHeight(260)
@@ -457,15 +805,63 @@ class LiveDashboardWidget(QWidget):
         self.groove_stability_status_label.setStyleSheet("color: #c7c7cc; font-size: 11px;")
         groove_layout.addWidget(self.groove_stability_status_label)
 
+        self.human_likeness_frame = QFrame()
+        self.human_likeness_frame.setMinimumHeight(260)
+        self.human_likeness_frame.setStyleSheet(
+            """
+            QFrame {
+                background: rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 10px;
+            }
+            QLabel {
+                color: #f5f5f7;
+            }
+            """
+        )
+        hl_layout = QVBoxLayout(self.human_likeness_frame)
+        hl_layout.setContentsMargins(10, 8, 10, 8)
+        hl_layout.setSpacing(6)
+
+        hl_header = QHBoxLayout()
+        hl_title = QLabel("Human-Likeness")
+        hl_title.setStyleSheet("font-weight: 600; font-size: 12px;")
+        self.human_likeness_details_button = QPushButton("Details")
+        self.human_likeness_details_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.human_likeness_details_button.clicked.connect(self._open_human_likeness_details)
+        hl_header.addWidget(hl_title)
+        hl_header.addStretch(1)
+        hl_header.addWidget(self.human_likeness_details_button)
+        hl_layout.addLayout(hl_header)
+
+        self.human_likeness_score_label = QLabel("Collecting...")
+        self.human_likeness_score_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.human_likeness_score_label.setStyleSheet("font-size: 22px; font-weight: 700; color: #5ac8fa;")
+        hl_layout.addWidget(self.human_likeness_score_label)
+
+        self.human_likeness_meta_label = QLabel("Suspicion: —  |  Confidence: —")
+        self.human_likeness_meta_label.setStyleSheet("color: #c7c7cc; font-size: 11px;")
+        hl_layout.addWidget(self.human_likeness_meta_label)
+
+        self.human_likeness_flags_label = QLabel("collecting live signal")
+        self.human_likeness_flags_label.setStyleSheet("font-size: 11px; color: #c7c7cc;")
+        self.human_likeness_flags_label.setWordWrap(True)
+        hl_layout.addWidget(self.human_likeness_flags_label)
+
+        self.human_likeness_disclaimer = QLabel("Research metric — not definitive bot detection.")
+        self.human_likeness_disclaimer.setStyleSheet("font-size: 10px; color: #8e8e93;")
+        hl_layout.addWidget(self.human_likeness_disclaimer)
+
         self.panel_cards = {
             "trajectory": LivePanelCard(self, "trajectory", "Touch Trajectory", self.trajectory_plot, compact_min_height=220),
             "force_radius": LivePanelCard(self, "force_radius", "Force / Radius Timeline", self.force_plot, compact_min_height=220),
             "signature_layer": LivePanelCard(self, "signature_layer", "Signature Layer", self.signature_plot, compact_min_height=220),
             "groove_view": LivePanelCard(self, "groove_view", "Groove View", self.groove_plot, compact_min_height=220),
-            "phase_timeline": LivePanelCard(self, "phase_timeline", "Phase Timeline", self.phase_plot, compact_min_height=130),
+            "phase_timeline": LivePanelCard(self, "phase_timeline", "Phase Timeline", self.phase_plot, compact_min_height=220),
             "pin_keyboard_mirror": LivePanelCard(self, "pin_keyboard_mirror", "PIN Keyboard Mirror", self.pin_mirror_frame, compact_min_height=220),
             "pressure_fingerprint": LivePanelCard(self, "pressure_fingerprint", "Pressure Fingerprint", self.pressure_frame, compact_min_height=220),
             "groove_stability": LivePanelCard(self, "groove_stability", "Groove Stability", self.groove_stability_frame, compact_min_height=220),
+            "human_likeness": LivePanelCard(self, "human_likeness", "Human-Likeness", self.human_likeness_frame, compact_min_height=220),
         }
 
         self.panel_root = QFrame()
@@ -684,6 +1080,8 @@ class LiveDashboardWidget(QWidget):
             ("Meta+3", "groove_view"),
             ("Ctrl+4", "groove_stability"),
             ("Meta+4", "groove_stability"),
+            ("Ctrl+5", "human_likeness"),
+            ("Meta+5", "human_likeness"),
         ]:
             register(sequence, lambda panel_id=panel_id: self.focus_panel(panel_id, "half"))
 
@@ -720,12 +1118,15 @@ class LiveDashboardWidget(QWidget):
             "trajectory": (0, 0),
             "force_radius": (0, 1),
             "signature_layer": (0, 2),
-            "groove_view": (0, 3),
-            "phase_timeline": (1, 0),
+            "groove_view": (1, 0),
             "pin_keyboard_mirror": (1, 1),
             "pressure_fingerprint": (1, 2),
-            "groove_stability": (1, 3),
+            "groove_stability": (2, 0),
+            "human_likeness": (2, 1),
+            "phase_timeline": (2, 2),
         }
+        max_row = max(position[0] for position in default_positions.values())
+        max_column = max(position[1] for position in default_positions.values())
 
         if focused_panel is None or state.mode == "default":
             self.focus_area.setVisible(False)
@@ -734,9 +1135,9 @@ class LiveDashboardWidget(QWidget):
             for panel_id, card in self.panel_cards.items():
                 row, column = default_positions[panel_id]
                 self.overview_grid.addWidget(card, row, column)
-            for column in range(4):
+            for column in range(max_column + 1):
                 self.overview_grid.setColumnStretch(column, 1)
-            for row in range(2):
+            for row in range(max_row + 1):
                 self.overview_grid.setRowStretch(row, 1)
             return
 
@@ -752,9 +1153,9 @@ class LiveDashboardWidget(QWidget):
                 continue
             row, column = default_positions[panel_id]
             self.overview_grid.addWidget(card, row, column)
-        for column in range(4):
+        for column in range(max_column + 1):
             self.overview_grid.setColumnStretch(column, 1)
-        for row in range(2):
+        for row in range(max_row + 1):
             self.overview_grid.setRowStretch(row, 1)
 
     def refresh(self) -> None:
@@ -820,6 +1221,7 @@ class LiveDashboardWidget(QWidget):
         self._update_pin_rhythm_panel(snapshot)
         self._update_pressure_fingerprint(snapshot)
         self._update_groove_stability(snapshot)
+        self._update_human_likeness(snapshot)
 
     def _update_control_message(self, snapshot: TelemetrySnapshot) -> None:
         message = snapshot.control_message
@@ -1097,6 +1499,60 @@ class LiveDashboardWidget(QWidget):
             """
         )
         self.groove_stability_status_label.setText(f"{status_text}: {score}%")
+
+    def _update_human_likeness(self, snapshot: TelemetrySnapshot) -> None:
+        active_session = next((session for session in snapshot.sessions if session.get("sessionId") == snapshot.active_session_id), None)
+        events = (active_session or {}).get("events", [])
+        metrics = compute_human_likeness_metrics(events)
+        self._latest_human_likeness_metrics = metrics
+        if self._human_likeness_dialog is not None and self._human_likeness_dialog.isVisible():
+            self._human_likeness_dialog.sync_live_context(
+                session_id=snapshot.active_session_id,
+                events=[dict(event) for event in events if event.get("messageType") == "touch_event"],
+                last_timestamp=snapshot.last_event_timestamp,
+            )
+
+        if metrics.human_likeness_score is None:
+            self.human_likeness_score_label.setText("Collecting...")
+            self.human_likeness_score_label.setStyleSheet("font-size: 22px; font-weight: 700; color: #8e8e93;")
+            self.human_likeness_meta_label.setText("Suspicion: collecting…  |  Confidence: Low")
+            flags = metrics.explanation_flags[:3] if metrics.explanation_flags else ["collecting live signal"]
+            self.human_likeness_flags_label.setText("\n".join(f"• {flag}" for flag in flags))
+            return
+
+        score = float(np.clip(metrics.human_likeness_score, 0.0, 100.0))
+        suspicion_level = self._suspicion_level(metrics.automation_suspicion_score)
+        color = "#34c759" if score >= 70.0 else "#ff9f0a" if score >= 45.0 else "#ff453a"
+        self.human_likeness_score_label.setText(f"{score:.0f}")
+        self.human_likeness_score_label.setStyleSheet(f"font-size: 22px; font-weight: 700; color: {color};")
+        self.human_likeness_meta_label.setText(
+            f"Suspicion: {suspicion_level}  |  Confidence: {metrics.confidence.title()}  |  Automation: {metrics.automation_suspicion_score:.0f}"
+        )
+        flags = metrics.explanation_flags[:3] if metrics.explanation_flags else ["collecting live signal"]
+        self.human_likeness_flags_label.setText("\n".join(f"• {flag}" for flag in flags))
+
+    def _suspicion_level(self, value: float | None) -> str:
+        if value is None:
+            return "Collecting"
+        if value >= 67.0:
+            return "High"
+        if value >= 34.0:
+            return "Medium"
+        return "Low"
+
+    def _open_human_likeness_details(self) -> None:
+        metrics = self._latest_human_likeness_metrics
+        if metrics is None:
+            return
+        self._human_likeness_dialog = HumanLikenessDetailsDialog(metrics, self)
+        snapshot = self.live_server.snapshot()
+        active_session = next((session for session in snapshot.sessions if session.get("sessionId") == snapshot.active_session_id), None)
+        self._human_likeness_dialog.sync_live_context(
+            session_id=snapshot.active_session_id,
+            events=[dict(event) for event in (active_session or {}).get("events", []) if event.get("messageType") == "touch_event"],
+            last_timestamp=snapshot.last_event_timestamp,
+        )
+        self._human_likeness_dialog.show()
 
     def _update_stability_panel(self, snapshot: TelemetrySnapshot) -> None:
         active_session = next((session for session in snapshot.sessions if session.get("sessionId") == snapshot.active_session_id), None)
