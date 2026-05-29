@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -24,16 +24,26 @@ from PyQt6.QtWidgets import (
 
 from touchprint_lab.analyzer.models import TouchSessionRecord
 from touchprint_lab.analyzer.studies import StudyManager, StudyPlan, StudyTemplate
+from touchprint_lab.ui.longitudinal_wizard import LongitudinalStudyWizard
 from touchprint_lab.utils.paths import TouchprintPaths
 
 logger = logging.getLogger(__name__)
 
 
 class StudyLibraryWidget(QWidget):
-    def __init__(self, paths: TouchprintPaths, study_manager: StudyManager, parent: QWidget | None = None):
+    def __init__(
+        self,
+        paths: TouchprintPaths,
+        study_manager: StudyManager,
+        experiment_manager: Any | None = None,
+        launch_wizard_callback: Callable[[], None] | None = None,
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
         self.paths = paths
         self.study_manager = study_manager
+        self.experiment_manager = experiment_manager
+        self.launch_wizard_callback = launch_wizard_callback
         self.sessions: list[TouchSessionRecord] = []
         self.current_session: TouchSessionRecord | None = None
         self.current_template: StudyTemplate | None = None
@@ -64,6 +74,8 @@ class StudyLibraryWidget(QWidget):
         self.clone_button.clicked.connect(self.clone_study)
         self.export_button = QPushButton("Export Study")
         self.export_button.clicked.connect(self.export_study)
+        self.wizard_button = QPushButton("Longitudinal Wizard")
+        self.wizard_button.clicked.connect(self.open_longitudinal_wizard)
 
         self.status_label = QLabel("Study idle.")
         self.preview_box = QPlainTextEdit()
@@ -91,7 +103,7 @@ class StudyLibraryWidget(QWidget):
         control_form.addRow("Selected Study", self.study_selector)
 
         control_buttons = QHBoxLayout()
-        for button in [self.create_button, self.start_button, self.pause_button, self.resume_button, self.clone_button, self.export_button]:
+        for button in [self.create_button, self.start_button, self.pause_button, self.resume_button, self.clone_button, self.export_button, self.wizard_button]:
             control_buttons.addWidget(button)
 
         preview_frame = QFrame()
@@ -214,6 +226,18 @@ class StudyLibraryWidget(QWidget):
         report = self.study_manager.export_study(self.sessions)
         self.summary_box.setPlainText(json.dumps(report, indent=2, sort_keys=True))
         QMessageBox.information(self, "Study Export", f"Study report exported to:\n{self.paths.study_reports}")
+
+    def open_longitudinal_wizard(self) -> None:
+        if self.launch_wizard_callback is not None:
+            self.launch_wizard_callback()
+            return
+        if self.experiment_manager is None:
+            QMessageBox.warning(self, "Wizard", "Experiment manager is not available.")
+            return
+        wizard = LongitudinalStudyWizard(self.paths, self.study_manager, self.experiment_manager, parent=self)
+        wizard.exec()
+        self._refresh_library()
+        self._refresh_dashboard_and_queue()
 
     def _refresh_library(self) -> None:
         self.template_list.blockSignals(True)

@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -33,6 +34,7 @@ from touchprint_lab.analyzer.studies import StudyManager
 from touchprint_lab.plots.touch_plots import TouchPlotWidget
 from touchprint_lab.ui.batch_analysis import BatchAnalysisWidget
 from touchprint_lab.ui.feature_inspector import FeatureInspectorWidget
+from touchprint_lab.ui.longitudinal_wizard import LongitudinalStudyWizard
 from touchprint_lab.ui.protocol_orchestrator import ProtocolOrchestratorWidget
 from touchprint_lab.ui.study_library import StudyLibraryWidget
 from touchprint_lab.utils.paths import TouchprintPaths
@@ -129,7 +131,12 @@ class MainWindow(QMainWindow):
         self.feature_inspector = FeatureInspectorWidget()
         self.batch_analysis = BatchAnalysisWidget(self.paths)
         self.protocol_orchestrator = ProtocolOrchestratorWidget(self.paths, self.dataset_manager)
-        self.study_library = StudyLibraryWidget(self.paths, self.study_manager)
+        self.study_library = StudyLibraryWidget(
+            self.paths,
+            self.study_manager,
+            self.experiment_manager,
+            launch_wizard_callback=self.open_longitudinal_wizard,
+        )
         self.analysis_tabs = QTabWidget()
         self.analysis_tabs.addTab(self.feature_inspector, "Feature Inspector")
         self.analysis_tabs.addTab(self.batch_analysis, "Batch Analysis")
@@ -285,6 +292,13 @@ class MainWindow(QMainWindow):
         self.marker_counter_value.setText(str(self.marker_count))
         logger.info("Session marker inserted at count=%s sequence=%s", self.marker_count, self.sequence_display.text())
         QMessageBox.information(self, "Session Marker", "Marker recorded for the current experimental sequence.")
+
+    def open_longitudinal_wizard(self) -> None:
+        wizard = LongitudinalStudyWizard(self.paths, self.study_manager, self.experiment_manager, parent=self)
+        if wizard.exec() == QDialog.DialogCode.Accepted:
+            self.sessions = self.dataset_manager.load_all_sessions()
+            self.feature_vectors = self.dataset_manager.load_all_feature_vectors()
+            self._refresh_lists()
 
     def _feature_vector_for_session(self, session_id: str) -> TouchFeatureVector | None:
         return next((vector for vector in self.feature_vectors if vector.session_id == session_id), None)

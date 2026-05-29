@@ -186,12 +186,14 @@ class ExperimentManager:
         self.report_root = self.paths.protocol_reports
         self.active_path = self.protocol_root / "active_protocol.json"
         self.history_path = self.protocol_root / "history.json"
+        self.study_queue_path = self.protocol_root / "study_queue.json"
         self.runs_dir = self.protocol_root / "runs"
         self.protocol_root.mkdir(parents=True, exist_ok=True)
         self.report_root.mkdir(parents=True, exist_ok=True)
         self.runs_dir.mkdir(parents=True, exist_ok=True)
         self.active_run: ExperimentRun | None = self._load_active_run()
         self.history: list[dict[str, Any]] = self._load_history()
+        self.study_queue: list[dict[str, Any]] = self._load_study_queue()
 
     def _load_active_run(self) -> ExperimentRun | None:
         if not self.active_path.exists():
@@ -221,6 +223,19 @@ class ExperimentManager:
 
     def _save_history(self) -> None:
         self.history_path.write_text(json.dumps(self.history, indent=2, sort_keys=True), encoding="utf-8")
+
+    def _load_study_queue(self) -> list[dict[str, Any]]:
+        if not self.study_queue_path.exists():
+            return []
+        try:
+            payload = json.loads(self.study_queue_path.read_text(encoding="utf-8"))
+            return list(payload) if isinstance(payload, list) else []
+        except Exception:
+            logger.warning("Study queue is invalid; starting fresh.")
+            return []
+
+    def _save_study_queue(self) -> None:
+        self.study_queue_path.write_text(json.dumps(self.study_queue, indent=2, sort_keys=True), encoding="utf-8")
 
     def create_protocol(
         self,
@@ -329,6 +344,32 @@ class ExperimentManager:
         logger.info("Created protocol %s for participant %s", run.protocol_session_id, participant_id)
         return run
 
+    def queue_study_sessions(
+        self,
+        schedule: list[dict[str, Any]],
+        *,
+        study_id: str,
+        template_id: str,
+        participant_id: str,
+    ) -> list[dict[str, Any]]:
+        queued: list[dict[str, Any]] = []
+        for item in schedule:
+            payload = dict(item)
+            payload.setdefault("studyId", study_id)
+            payload.setdefault("studyTemplateId", template_id)
+            payload.setdefault("participantId", participant_id)
+            queued.append(payload)
+        self.study_queue = queued
+        self._save_study_queue()
+        return list(self.study_queue)
+
+    def clear_study_queue(self) -> None:
+        self.study_queue = []
+        self._save_study_queue()
+
+    def study_queue_snapshot(self) -> list[dict[str, Any]]:
+        return list(self.study_queue)
+
     @staticmethod
     def _expected_duration(experiment_type: str) -> int:
         return {
@@ -378,6 +419,7 @@ class ExperimentManager:
                 "progress": 0.0,
                 "currentTrialIndex": None,
                 "totalTrials": 0,
+                "queuedStudySessions": len(self.study_queue),
             }
         current = run.current_trial()
         return {
@@ -391,6 +433,7 @@ class ExperimentManager:
             "protocolSessionId": run.protocol_session_id,
             "currentTrial": current.to_dict() if current else None,
             "nextTrialInSeconds": current.scheduled_delay_seconds if current else None,
+            "queuedStudySessions": len(self.study_queue),
         }
 
     def advance_trial(self) -> ExperimentTrial | None:
