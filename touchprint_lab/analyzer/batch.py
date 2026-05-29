@@ -144,6 +144,7 @@ class BatchAnalysisReport:
     filters: dict[str, Any]
     sample_count: int
     user_count: int
+    input_types: list[str]
     session_labels: list[str]
     pairwise_rows: list[dict[str, Any]]
     similarity_summary: dict[str, Any]
@@ -163,6 +164,7 @@ class BatchAnalysisReport:
             "filters": self.filters,
             "sampleCount": self.sample_count,
             "userCount": self.user_count,
+            "inputTypes": self.input_types,
             "similaritySummary": self.similarity_summary,
             "topFeatures": self.feature_importance_rows[:10],
             "weakFeatures": list(reversed(self.feature_importance_rows[-10:])),
@@ -178,6 +180,7 @@ class BatchAnalysisReport:
             f"- Generated At: `{self.generated_at}`",
             f"- Samples: `{self.sample_count}`",
             f"- Users: `{self.user_count}`",
+            f"- Input Types: `{', '.join(self.input_types) if self.input_types else 'unknown'}`",
             "",
             "## Filters",
         ]
@@ -241,6 +244,7 @@ class BatchAnalyzer:
             filters=filters.to_dict(),
             sample_count=len(samples),
             user_count=len({sample.session.user_id for sample in samples}),
+            input_types=sorted({sample.vector.input_type for sample in samples}),
             session_labels=[sample.session.session_id for sample in samples],
             pairwise_rows=pairwise_rows,
             similarity_summary=similarity_summary,

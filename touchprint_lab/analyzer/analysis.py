@@ -99,6 +99,7 @@ def session_summary_metrics(session: TouchSessionRecord) -> dict[str, Any]:
     metrics = {
         "session_id": session.session_id,
         "device_type": session.device_type,
+        "input_type": session.resolved_input_type(),
         "event_count": len(rows),
         "touch_count": len({row["touchId"] for row in rows}),
         "duration_seconds": float(max(timestamps) - min(timestamps)) if timestamps else 0.0,

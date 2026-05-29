@@ -257,6 +257,7 @@ class TelemetrySessionState:
     session_id: str
     device_type: str = "unknown"
     input_type: str = "unknown"
+    observed_input_types: set[str] = field(default_factory=set)
     export_expected: bool = False
     status: str = "live_only"
     started_at: float | None = None
@@ -279,7 +280,10 @@ class TelemetrySessionState:
             self.started_at = message.timestamp
         self.last_received_at = received_at
         self.device_type = message.device_type or self.device_type
-        self.input_type = message.input_type or self.input_type
+        normalized_input = _normalize_session_input_type(message.input_type, [])
+        if normalized_input != "unknown":
+            self.observed_input_types.add(normalized_input)
+            self.input_type = self.resolved_input_type()
         self.export_expected = self.export_expected or message.export_expected
         if message.message_type == TelemetryMessageType.SESSION_END:
             self.ended_at = message.timestamp
@@ -328,6 +332,15 @@ class TelemetrySessionState:
         if duration <= 0.0:
             return float(self.event_count)
         return self.event_count / duration
+
+    def resolved_input_type(self) -> str:
+        if not self.observed_input_types:
+            return self.input_type if self.input_type in {"finger", "pencil", "mixed", "unknown"} else "unknown"
+        if self.observed_input_types <= {"finger"}:
+            return "finger"
+        if self.observed_input_types <= {"pencil"}:
+            return "pencil"
+        return "mixed"
 
     def to_snapshot(self) -> dict[str, Any]:
         return {
@@ -517,6 +530,7 @@ class LiveTelemetryServer:
             new_state.touch_count = 0
             new_state.tap_count = 0
             new_state.marker_count = 0
+            new_state.observed_input_types.clear()
             new_state.out_of_order_count = 0
             new_state.possible_drop_count = 0
             new_state.warnings.clear()
@@ -528,13 +542,19 @@ class LiveTelemetryServer:
             new_state.status = "live_only"
             new_state.export_expected = False
             new_state.device_type = message.device_type or new_state.device_type
-            new_state.input_type = message.input_type or new_state.input_type
+            new_state.observed_input_types.clear()
+            normalized_input = _normalize_session_input_type(message.input_type, [])
+            if normalized_input != "unknown":
+                new_state.observed_input_types.add(normalized_input)
+            new_state.input_type = new_state.resolved_input_type()
             new_state.last_received_at = received_at
         else:
+            normalized_input = _normalize_session_input_type(message.input_type, [])
             new_state = TelemetrySessionState(
                 session_id=new_session_id,
                 device_type=message.device_type or "unknown",
-                input_type=message.input_type or "unknown",
+                input_type=normalized_input,
+                observed_input_types={normalized_input} if normalized_input != "unknown" else set(),
                 export_expected=False,
                 status="live_only",
                 started_at=message.timestamp,
@@ -583,6 +603,9 @@ class LiveTelemetryServer:
                 reasons.append(f"timestamp range end mismatch: live={live_end:.6f} export={export_end:.6f}")
             if state.device_type != str(export_payload.get("deviceType", state.device_type)):
                 reasons.append(f"device type mismatch: live={state.device_type} export={export_payload.get('deviceType')}")
+            export_input_type = _normalize_session_input_type(str(export_payload.get("inputType", "unknown")), [])
+            if export_input_type != "unknown" and state.input_type != export_input_type:
+                reasons.append(f"input type mismatch: live={state.input_type} export={export_input_type}")
 
             if reasons:
                 state.status = "export_mismatch"
@@ -600,6 +623,7 @@ class LiveTelemetryServer:
                 "liveTimestampRange": [live_start, live_end],
                 "exportTimestampRange": [export_start, export_end],
                 "deviceType": state.device_type,
+                "inputType": state.input_type,
                 "reasons": list(state.export_mismatch_reasons),
             }
             return dict(state.export_summary)
@@ -665,7 +689,6 @@ class LiveTelemetryServer:
             return session_id
         return f"{session_id[:4]}…{session_id[-4:]}"
 
-
 def _optional_string(value: Any) -> str | None:
     if value is None:
         return None
@@ -704,6 +727,15 @@ def _optional_bool(value: Any) -> bool | None:
     if text in {"false", "0", "no", "n"}:
         return False
     raise TelemetryMessageValidationError(f"Invalid boolean value: {value!r}")
+
+
+def _normalize_session_input_type(raw_value: str, events: list[TelemetryMessage] | None = None) -> str:
+    normalized = str(raw_value or "").strip().lower()
+    if normalized in {"finger", "pencil", "mixed", "unknown"}:
+        return normalized
+    if normalized in {"indirect", "indirectpointer"}:
+        return "mixed"
+    return "unknown"
 
 
 def _coerce_float(value: Any, field_name: str) -> float:

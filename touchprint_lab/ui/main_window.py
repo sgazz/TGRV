@@ -224,6 +224,7 @@ class MainWindow(QMainWindow):
         payload = {
             "session": self.current_session.session_id,
             "deviceType": self.current_session.device_type,
+            "inputType": self.current_session.resolved_input_type(),
             "sessionType": self.current_session.session_type,
             "participantId": self.current_session.participant_id,
             "experimentId": self.current_session.experiment_id,

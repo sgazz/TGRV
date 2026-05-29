@@ -27,6 +27,7 @@ class TouchEventRecord:
     device_type: str
     coalesced_touches_count: int
     predicted_touches_count: int
+    input_type: str = "unknown"
     experiment_mode: str | None = None
     pin_sequence_id: str | None = None
     pin_sequence: str | None = None
@@ -65,6 +66,7 @@ class TouchEventRecord:
             device_type=str(payload.get("deviceType", "other")),
             coalesced_touches_count=int(payload.get("coalescedTouchesCount", 0)),
             predicted_touches_count=int(payload.get("predictedTouchesCount", 0)),
+            input_type=str(payload.get("inputType", payload.get("input_type", "unknown"))),
             experiment_mode=_optional_string(payload.get("experimentMode")),
             pin_sequence_id=_optional_string(payload.get("pinSequenceId")),
             pin_sequence=_optional_string(payload.get("pinSequence")),
@@ -103,6 +105,7 @@ class TouchEventRecord:
             "deviceType": self.device_type,
             "coalescedTouchesCount": self.coalesced_touches_count,
             "predictedTouchesCount": self.predicted_touches_count,
+            "inputType": self.input_type,
             "experimentMode": self.experiment_mode,
             "pinSequenceId": self.pin_sequence_id,
             "pinSequence": self.pin_sequence,
@@ -128,6 +131,7 @@ class TouchSessionRecord:
     exported_at: float
     device_type: str
     touch_event_count: int
+    input_type: str = "unknown"
     session_type: str = "unknown"
     participant_id: str = "participant_01"
     experiment_id: str = "experiment_01"
@@ -161,6 +165,10 @@ class TouchSessionRecord:
         environment_labels = payload.get("environmentLabels") or {}
         timing_metadata = payload.get("timingMetadata") or {}
         study_metadata = payload.get("studyMetadata") or {}
+        input_type = _normalize_session_input_type(
+            str(payload.get("inputType", payload.get("input_type", "unknown"))),
+            events,
+        )
         session_type = str(
             payload.get("sessionType")
             or payload.get("session_type")
@@ -173,6 +181,7 @@ class TouchSessionRecord:
             started_at=float(payload.get("startedAt", 0.0)),
             exported_at=float(payload.get("exportedAt", 0.0)),
             device_type=str(payload.get("deviceType", "other")),
+            input_type=input_type,
             session_type=session_type,
             touch_event_count=int(payload.get("touchEventCount", len(events))),
             participant_id=str(payload.get("participantId", metadata.get("participantId", "participant_01"))),
@@ -202,6 +211,7 @@ class TouchSessionRecord:
             "startedAt": self.started_at,
             "exportedAt": self.exported_at,
             "deviceType": self.device_type,
+            "inputType": self.input_type,
             "sessionType": self.session_type,
             "participantId": self.participant_id,
             "experimentId": self.experiment_id,
@@ -223,6 +233,9 @@ class TouchSessionRecord:
             "touchEventCount": self.touch_event_count,
             "events": [event.to_dict() for event in self.events],
         }
+
+    def resolved_input_type(self) -> str:
+        return _normalize_session_input_type(self.input_type, self.events)
 
 
 def _optional_float(value: Any) -> float | None:
@@ -256,3 +269,40 @@ def _optional_bool(value: Any) -> bool | None:
     if text in {"false", "0", "no", "n"}:
         return False
     return None
+
+
+def _normalize_session_input_type(raw_value: str, events: list[TouchEventRecord]) -> str:
+    normalized = str(raw_value or "").strip().lower()
+    if normalized in {"finger", "pencil", "mixed"}:
+        return normalized
+    if normalized in {"indirect", "indirectpointer"}:
+        return "mixed"
+    if normalized == "unknown":
+        normalized = ""
+
+    observed: set[str] = set()
+    for event in events:
+        event_input = str(event.input_type or "").strip().lower()
+        if event_input in {"finger", "pencil"}:
+            observed.add(event_input)
+            continue
+        if event_input in {"indirect", "indirectpointer"}:
+            observed.add("mixed")
+            continue
+
+        touch_type = str(event.touch_type or "").strip().lower()
+        if touch_type == "direct":
+            observed.add("finger")
+        elif touch_type == "pencil":
+            observed.add("pencil")
+        elif touch_type in {"indirect", "indirectpointer"}:
+            observed.add("mixed")
+
+    observed.discard("unknown")
+    if not observed:
+        return "unknown"
+    if observed <= {"finger"}:
+        return "finger"
+    if observed <= {"pencil"}:
+        return "pencil"
+    return "mixed"

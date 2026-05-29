@@ -46,6 +46,7 @@ class TouchFeatureVector:
     session_id: str
     user_id: str
     device_type: str
+    input_type: str
     total_touch_count: int
     average_touch_duration: float
     session_duration: float
@@ -114,6 +115,7 @@ class TouchFeatureVector:
             session_id=str(payload["sessionId"]),
             user_id=str(payload.get("userId", payload.get("user_id", "user_01"))),
             device_type=str(payload.get("deviceType", payload.get("device_type", "other"))),
+            input_type=str(payload.get("inputType", payload.get("input_type", "unknown"))),
             total_touch_count=int(payload.get("totalTouchCount", payload.get("total_touch_count", 0))),
             average_touch_duration=float_value("average_touch_duration", "averageTouchDuration"),
             session_duration=float_value("session_duration", "sessionDuration"),
@@ -153,6 +155,7 @@ class TouchFeatureVector:
             "sessionId": self.session_id,
             "userId": self.user_id,
             "deviceType": self.device_type,
+            "inputType": self.input_type,
             "metadata": self.metadata,
         }
         for name, value in self.feature_items():
@@ -165,6 +168,7 @@ class TouchFeatureVector:
             "sessionId": self.session_id,
             "userId": self.user_id,
             "deviceType": self.device_type,
+            "inputType": self.input_type,
         }
         for name, value in self.feature_items():
             payload[name] = value
@@ -193,6 +197,7 @@ class FeatureExtractor:
             session_id=session.session_id,
             user_id=session.user_id,
             device_type=session.device_type,
+            input_type=session.resolved_input_type(),
             total_touch_count=len(touch_groups),
             average_touch_duration=feature_values["average_touch_duration"],
             session_duration=self._session_duration(observed_events),
@@ -225,6 +230,7 @@ class FeatureExtractor:
                 "startedAt": session.started_at,
                 "exportedAt": session.exported_at,
                 "deviceType": session.device_type,
+                "inputType": session.resolved_input_type(),
                 "userId": session.user_id,
             },
         )
