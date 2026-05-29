@@ -54,7 +54,7 @@ The Python platform provides:
 ## Running the analyzer
 
 ```bash
-cd /Volumes/External2TB/Xcode/TGRV
+cd /Volumes/TGRV
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
