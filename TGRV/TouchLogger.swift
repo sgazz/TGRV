@@ -11,11 +11,18 @@ final class TouchLogger {
     private let queue = DispatchQueue(label: "com.gazza.tgrv.touch-logger", qos: .userInitiated)
     private var events: [TouchEvent]
     private var touchStates: [ObjectIdentifier: TouchState]
+    private let telemetryClient: LiveTelemetryClient
+    private var telemetryHostConfigured: Bool
 
     private init() {
         self.events = []
         self.events.reserveCapacity(4096)
         self.touchStates = [:]
+        self.telemetryClient = .shared
+        self.telemetryHostConfigured = !self.telemetryClient.currentConfiguration().host.isEmpty
+        if self.telemetryClient.shouldAutoConnectOnLaunch {
+            self.telemetryClient.connect()
+        }
     }
 
     func recordTouches(
@@ -116,15 +123,74 @@ final class TouchLogger {
     }
 
     func exportCurrentSession() throws -> URL {
-        try ExportManager.export(session: currentSessionExport())
+        if telemetryHostConfigured {
+            telemetryClient.sendLifecycle(
+                .sessionEnd,
+                sessionId: SessionManager.shared.currentSessionId(),
+                deviceType: Self.currentDeviceTypeString,
+                exportExpected: true
+            )
+        }
+        return try ExportManager.export(session: currentSessionExport())
     }
 
     func resetSession() {
+        if telemetryHostConfigured {
+            telemetryClient.sendLifecycle(
+                .sessionEnd,
+                sessionId: SessionManager.shared.currentSessionId(),
+                deviceType: Self.currentDeviceTypeString,
+                exportExpected: false
+            )
+        }
         queue.sync {
             events.removeAll(keepingCapacity: true)
             touchStates.removeAll(keepingCapacity: true)
         }
         _ = SessionManager.shared.resetSession()
+        if telemetryHostConfigured {
+            telemetryClient.sendLifecycle(
+                .sessionStart,
+                sessionId: SessionManager.shared.currentSessionId(),
+                deviceType: Self.currentDeviceTypeString,
+                exportExpected: true
+            )
+        }
+    }
+
+    func startLiveTelemetrySession() {
+        guard !telemetryClient.currentConfiguration().host.isEmpty else { return }
+        telemetryClient.sendLifecycle(
+            .sessionStart,
+            sessionId: SessionManager.shared.currentSessionId(),
+            deviceType: Self.currentDeviceTypeString,
+            exportExpected: true
+        )
+    }
+
+    func liveTelemetrySnapshot() -> LiveTelemetrySnapshot {
+        telemetryClient.snapshot()
+    }
+
+    func telemetryConfiguration() -> TelemetryConfiguration {
+        telemetryClient.currentConfiguration()
+    }
+
+    func updateTelemetryConfiguration(host: String, port: UInt16, connect: Bool) {
+        telemetryHostConfigured = !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        telemetryClient.updateConfiguration(host: host, port: port, connect: connect)
+    }
+
+    func connectLiveTelemetry() {
+        telemetryClient.connect()
+    }
+
+    func disconnectLiveTelemetry() {
+        telemetryClient.disconnect()
+    }
+
+    func runTelemetryConnectionTest(completion: @escaping (TelemetryConnectionTestResult) -> Void) {
+        telemetryClient.runConnectionTest(completion: completion)
     }
 
     private func appendSample(
@@ -178,6 +244,17 @@ final class TouchLogger {
         )
 
         events.append(event)
+        if telemetryHostConfigured {
+            telemetryClient.sendTouchEvent(
+                event,
+                sampleKind: sampleKind,
+                sampleIndex: sampleIndex,
+                sampleCount: sampleCount,
+                deviceType: Self.currentDeviceTypeString,
+                inputType: Self.touchInputString(for: touch.type),
+                exportExpected: true
+            )
+        }
     }
 
     private static func touchInputType(for type: UITouch.TouchType) -> TouchInputType {
@@ -197,6 +274,23 @@ final class TouchLogger {
         }
     }
 
+    private static func touchInputString(for type: UITouch.TouchType) -> String {
+        switch type {
+        case .direct:
+            return "finger"
+        case .pencil:
+            return "pencil"
+        case .stylus:
+            return "stylus"
+        case .indirect:
+            return "indirect"
+        case .indirectPointer:
+            return "indirectPointer"
+        @unknown default:
+            return "unknown"
+        }
+    }
+
     private static var currentDeviceType: DeviceType {
         switch UIDevice.current.userInterfaceIdiom {
         case .phone:
@@ -205,6 +299,17 @@ final class TouchLogger {
             return .pad
         default:
             return .other
+        }
+    }
+
+    private static var currentDeviceTypeString: String {
+        switch UIDevice.current.userInterfaceIdiom {
+        case .phone:
+            return "iPhone"
+        case .pad:
+            return "iPad"
+        default:
+            return "other"
         }
     }
 }

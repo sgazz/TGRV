@@ -47,6 +47,19 @@ This document describes how the platform is used in practice.
 
 Longitudinal studies reuse the same participant and template across repeated sessions.
 
+For multi-day studies, use the Longitudinal Study Wizard instead of manual creation.
+
+The wizard produces:
+
+- a deterministic study plan
+- a structured schedule preview
+- participant metadata
+- environment labels
+- protocol manifest
+- queued study sessions
+
+Its 6-step flow is documented in [Longitudinal Study Wizard](longitudinal-wizard.md).
+
 Recommended setup:
 
 - keep the participant identifier stable
@@ -55,7 +68,21 @@ Recommended setup:
 - record environmental metadata explicitly
 - avoid hidden manual adjustments between sessions
 
-## 7. Report workflow
+## 7. Wizard launch path
+
+Open the wizard from:
+
+- `Study Library` tab
+- `Longitudinal Wizard` button
+
+If the wizard is used, the following output files are created under `touchprint_lab/processed/studies/<studyId>/`:
+
+- `study_plan.json`
+- `study_schedule.json`
+- `participant_metadata.json`
+- `protocol_manifest.json`
+
+## 8. Report workflow
 
 Reports are written as bundles containing:
 
@@ -69,4 +96,3 @@ Typical report locations:
 - `touchprint_lab/processed/reports/`
 - `touchprint_lab/processed/protocols/reports/`
 - `touchprint_lab/processed/studies/reports/`
-

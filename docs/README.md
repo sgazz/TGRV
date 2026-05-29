@@ -14,8 +14,10 @@ This documentation describes the full TGRV research stack:
 2. Read the [Architecture Guide](architecture.md) to understand how modules interact.
 3. Read the [Data Model Guide](data-model.md) to understand exported JSON and feature vectors.
 4. Read the [Study Templates Guide](study-templates.md) to understand standardized study presets.
-5. Read the [Workflows Guide](workflows.md) for ingestion, analysis, and human-study execution.
-6. Read the [Setup Guide](setup.md) to run the platform locally.
+5. Read the [Longitudinal Study Wizard](longitudinal-wizard.md) to understand the guided multi-day study flow.
+6. Read the [Workflows Guide](workflows.md) for ingestion, analysis, and human-study execution.
+7. Read the [Testing Guide](testing.md) to validate the end-to-end pipeline.
+8. Read the [Setup Guide](setup.md) to run the platform locally.
 
 ## Document map
 
@@ -23,10 +25,11 @@ This documentation describes the full TGRV research stack:
 - [Architecture Guide](architecture.md)
 - [Data Model Guide](data-model.md)
 - [Study Templates Guide](study-templates.md)
+- [Longitudinal Study Wizard](longitudinal-wizard.md)
 - [Workflows Guide](workflows.md)
+- [Testing Guide](testing.md)
 - [Setup Guide](setup.md)
 
 ## Scope
 
 This system is designed for controlled behavioral biometrics research. It is not an authentication product and does not make identity decisions.
-

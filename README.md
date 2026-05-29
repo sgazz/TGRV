@@ -97,5 +97,17 @@ Full documentation lives in `docs/`:
 - `docs/architecture.md`
 - `docs/data-model.md`
 - `docs/study-templates.md`
+- `docs/longitudinal-wizard.md`
 - `docs/workflows.md`
+- `docs/testing.md`
 - `docs/setup.md`
+
+## Testing
+
+Run the end-to-end validation suite from the project root:
+
+```bash
+python -m touchprint_lab.tests.runner
+```
+
+The runner also writes reports to `touchprint_lab/processed/tests/reports/`.

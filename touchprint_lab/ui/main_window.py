@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -30,9 +31,12 @@ from touchprint_lab.analyzer.features import TouchFeatureVector
 from touchprint_lab.analyzer.models import TouchSessionRecord
 from touchprint_lab.analyzer.protocols import ExperimentManager
 from touchprint_lab.analyzer.studies import StudyManager
+from touchprint_lab.live.telemetry_server import LiveTelemetryServer
 from touchprint_lab.plots.touch_plots import TouchPlotWidget
 from touchprint_lab.ui.batch_analysis import BatchAnalysisWidget
 from touchprint_lab.ui.feature_inspector import FeatureInspectorWidget
+from touchprint_lab.ui.live_dashboard import LiveDashboardWidget
+from touchprint_lab.ui.longitudinal_wizard import LongitudinalStudyWizard
 from touchprint_lab.ui.protocol_orchestrator import ProtocolOrchestratorWidget
 from touchprint_lab.ui.study_library import StudyLibraryWidget
 from touchprint_lab.utils.paths import TouchprintPaths
@@ -50,6 +54,8 @@ class MainWindow(QMainWindow):
         self.dataset_manager = DatasetManager(paths, self.experiment_manager)
         self.ingestion_service = IngestionService(self.dataset_manager, paths.incoming)
         self.ingestion_service.sessionImported.connect(self._on_session_imported)
+        self.live_telemetry_server = LiveTelemetryServer(paths)
+        self.live_telemetry_server.start()
 
         self.sessions: list[TouchSessionRecord] = self.dataset_manager.load_all_sessions()
         self.feature_vectors: list[TouchFeatureVector] = self.dataset_manager.load_all_feature_vectors()
@@ -129,11 +135,18 @@ class MainWindow(QMainWindow):
         self.feature_inspector = FeatureInspectorWidget()
         self.batch_analysis = BatchAnalysisWidget(self.paths)
         self.protocol_orchestrator = ProtocolOrchestratorWidget(self.paths, self.dataset_manager)
-        self.study_library = StudyLibraryWidget(self.paths, self.study_manager)
+        self.live_dashboard = LiveDashboardWidget(self.live_telemetry_server)
+        self.study_library = StudyLibraryWidget(
+            self.paths,
+            self.study_manager,
+            self.experiment_manager,
+            launch_wizard_callback=self.open_longitudinal_wizard,
+        )
         self.analysis_tabs = QTabWidget()
         self.analysis_tabs.addTab(self.feature_inspector, "Feature Inspector")
         self.analysis_tabs.addTab(self.batch_analysis, "Batch Analysis")
         self.analysis_tabs.addTab(self.protocol_orchestrator, "Experiment Protocol")
+        self.analysis_tabs.addTab(self.live_dashboard, "Live Telemetry")
         self.analysis_tabs.addTab(self.study_library, "Study Library")
 
         right_panel = QWidget()
@@ -263,6 +276,7 @@ class MainWindow(QMainWindow):
         feature_vector = self.dataset_manager.feature_vector_for_session(session.session_id)
         if feature_vector is not None:
             self.feature_vectors.append(feature_vector)
+        self.live_telemetry_server.observe_export(session)
         self._refresh_lists()
         self.protocol_orchestrator.refresh_state()
         self.study_library.set_sessions(self.sessions)
@@ -286,6 +300,13 @@ class MainWindow(QMainWindow):
         logger.info("Session marker inserted at count=%s sequence=%s", self.marker_count, self.sequence_display.text())
         QMessageBox.information(self, "Session Marker", "Marker recorded for the current experimental sequence.")
 
+    def open_longitudinal_wizard(self) -> None:
+        wizard = LongitudinalStudyWizard(self.paths, self.study_manager, self.experiment_manager, parent=self)
+        if wizard.exec() == QDialog.DialogCode.Accepted:
+            self.sessions = self.dataset_manager.load_all_sessions()
+            self.feature_vectors = self.dataset_manager.load_all_feature_vectors()
+            self._refresh_lists()
+
     def _feature_vector_for_session(self, session_id: str) -> TouchFeatureVector | None:
         return next((vector for vector in self.feature_vectors if vector.session_id == session_id), None)
 
@@ -295,3 +316,7 @@ class MainWindow(QMainWindow):
             if item and item.data(Qt.ItemDataRole.UserRole) == session_id:
                 self.session_list.setCurrentItem(item)
                 return
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self.live_telemetry_server.stop()
+        super().closeEvent(event)

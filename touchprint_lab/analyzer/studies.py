@@ -641,6 +641,9 @@ class StudyManager:
         self.engine.register_template(template)
         self._write_builtin_templates()
 
+    def save_active_study(self) -> None:
+        self._save_active()
+
     def import_template(self, path: Path) -> StudyTemplate:
         template = self.engine.import_template(path)
         self.register_template(template)
@@ -668,6 +671,63 @@ class StudyManager:
         self.active_study = study
         self._save_active()
         return study
+
+    def export_study_bundle(
+        self,
+        study: StudyPlan | None = None,
+        *,
+        participant_metadata: dict[str, Any] | None = None,
+        protocol_manifest: dict[str, Any] | None = None,
+        environment_labels: dict[str, Any] | None = None,
+        output_dir: Path | None = None,
+    ) -> dict[str, str]:
+        study = study or self.active_study or self.last_completed_study
+        if study is None:
+            raise ValueError("No study available to export.")
+
+        study_dir = output_dir or (self.paths.studies / study.study_id)
+        study_dir.mkdir(parents=True, exist_ok=True)
+
+        study_plan_path = study_dir / "study_plan.json"
+        study_schedule_path = study_dir / "study_schedule.json"
+        participant_metadata_path = study_dir / "participant_metadata.json"
+        protocol_manifest_path = study_dir / "protocol_manifest.json"
+        study_draft_path = study_dir / "study_draft.json"
+
+        study_plan_path.write_text(json.dumps(study.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+        study_schedule_path.write_text(json.dumps([spec.to_dict() for spec in study.schedule], indent=2, sort_keys=True), encoding="utf-8")
+        study_draft_path.write_text(json.dumps(study.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+
+        participant_payload = {
+            "studyId": study.study_id,
+            "templateId": study.template_id,
+            "templateVersion": study.template_version,
+            "participantId": study.participant_id,
+            "createdAt": study.created_at,
+            "startAt": study.start_at,
+            "participantMetadata": participant_metadata or {},
+            "environmentLabels": environment_labels or {},
+        }
+        participant_metadata_path.write_text(json.dumps(participant_payload, indent=2, sort_keys=True), encoding="utf-8")
+
+        protocol_payload = protocol_manifest or {
+            "studyId": study.study_id,
+            "templateId": study.template_id,
+            "templateVersion": study.template_version,
+            "templateName": study.template_name,
+            "templateDescription": study.template_description,
+            "sessionCount": len(study.schedule),
+            "queue": [spec.to_dict() for spec in study.queue()],
+        }
+        protocol_manifest_path.write_text(json.dumps(protocol_payload, indent=2, sort_keys=True), encoding="utf-8")
+
+        return {
+            "studyPlanJson": str(study_plan_path),
+            "studyScheduleJson": str(study_schedule_path),
+            "participantMetadataJson": str(participant_metadata_path),
+            "protocolManifestJson": str(protocol_manifest_path),
+            "studyDraftJson": str(study_draft_path),
+        }
 
     def start_study(self) -> StudyPlan | None:
         if self.active_study is None:

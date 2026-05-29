@@ -423,7 +423,7 @@ class BatchAnalyzer:
         order = np.argsort(fpr)
         sorted_fpr = np.asarray(fpr, dtype=np.float64)[order]
         sorted_tpr = np.asarray(tpr, dtype=np.float64)[order]
-        auc = float(np.trapz(sorted_tpr, sorted_fpr)) if len(sorted_fpr) > 1 else 0.0
+        auc = float(np.trapezoid(sorted_tpr, sorted_fpr)) if len(sorted_fpr) > 1 else 0.0
         eer_index = int(np.argmin(np.abs(np.asarray(fpr) - np.asarray(fnr))))
         return {
             "thresholds": thresholds.tolist(),
@@ -485,7 +485,10 @@ class BatchAnalyzer:
         matrix = normalized_feature_matrix(vectors)
         norms = np.linalg.norm(matrix, axis=1, keepdims=True)
         normalized = np.divide(matrix, np.where(norms == 0.0, 1.0, norms))
-        return np.clip(normalized @ normalized.T, -1.0, 1.0)
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            similarity = normalized @ normalized.T
+        similarity = np.nan_to_num(similarity, nan=0.0, posinf=1.0, neginf=-1.0)
+        return np.clip(similarity, -1.0, 1.0)
 
     def _pairwise_distance_matrix(self, vectors: list[TouchFeatureVector]) -> np.ndarray:
         if not vectors:
@@ -1265,7 +1268,8 @@ def _correlation_matrix(matrix: np.ndarray) -> np.ndarray:
     scale = np.std(centered, axis=0, keepdims=True)
     standardized = np.divide(centered, np.where(scale == 0.0, 1.0, scale))
     denominator = max(standardized.shape[0] - 1, 1)
-    correlation = (standardized.T @ standardized) / denominator
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        correlation = (standardized.T @ standardized) / denominator
     correlation = np.nan_to_num(correlation, nan=0.0, posinf=0.0, neginf=0.0)
     np.fill_diagonal(correlation, 1.0)
     return correlation
