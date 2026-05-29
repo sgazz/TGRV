@@ -33,6 +33,7 @@ class LiveDashboardWidget(QWidget):
         super().__init__(parent)
         self.live_server = live_server
         self._plot_error_keys: set[str] = set()
+        self._pin_highlight_token = 0
         pg.setConfigOptions(antialias=True)
 
         self._build_ui()
@@ -105,6 +106,23 @@ class LiveDashboardWidget(QWidget):
 
         root_layout.addWidget(self.status_bar)
 
+        self.control_message_label = QLabel()
+        self.control_message_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.control_message_label.setStyleSheet(
+            """
+            QLabel {
+                color: #ff9f0a;
+                background: rgba(255, 159, 10, 0.10);
+                border: 1px solid rgba(255, 159, 10, 0.18);
+                border-radius: 8px;
+                padding: 4px 8px;
+                font-size: 11px;
+            }
+            """
+        )
+        self.control_message_label.setVisible(False)
+        root_layout.addWidget(self.control_message_label)
+
         self.stability_frame = QFrame()
         self.stability_frame.setStyleSheet(
             """
@@ -134,22 +152,92 @@ class LiveDashboardWidget(QWidget):
 
         root_layout.addWidget(self.stability_frame)
 
+        self.pin_mirror_frame = QFrame()
+        self.pin_mirror_frame.setObjectName("LivePinMirror")
+        self.pin_mirror_frame.setMinimumHeight(260)
+        self.pin_mirror_frame.setStyleSheet(
+            """
+            #LivePinMirror {
+                background: rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 10px;
+            }
+            QLabel {
+                color: #f5f5f7;
+            }
+            """
+        )
+        pin_layout = QVBoxLayout(self.pin_mirror_frame)
+        pin_layout.setContentsMargins(10, 8, 10, 8)
+        pin_layout.setSpacing(6)
+
+        pin_header = QHBoxLayout()
+        pin_title = QLabel("PIN Mirror")
+        pin_title.setStyleSheet("font-weight: 600; font-size: 12px;")
+        self.pin_sequence_label = QLabel("PIN: _ _ _ _")
+        self.pin_sequence_label.setStyleSheet("font-family: Menlo, Monaco, monospace; font-size: 12px;")
+        self.pin_sequence_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.pin_detail_label = QLabel("Waiting for PIN input")
+        self.pin_detail_label.setStyleSheet("color: #c7c7cc; font-size: 11px;")
+        self.pin_detail_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        pin_header.addWidget(pin_title)
+        pin_header.addStretch(1)
+        pin_header.addWidget(self.pin_sequence_label)
+        pin_layout.addLayout(pin_header)
+        pin_layout.addWidget(self.pin_detail_label)
+
+        self.pin_feedback_label = QLabel("Action: —")
+        self.pin_feedback_label.setStyleSheet("color: #c7c7cc; font-size: 11px;")
+        pin_layout.addWidget(self.pin_feedback_label)
+
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(8)
+        self.pin_cells: dict[str, QLabel] = {}
+        pin_rows: list[list[str | None]] = [
+            ["1", "2", "3"],
+            ["4", "5", "6"],
+            ["7", "8", "9"],
+            [None, "0", None],
+        ]
+        for row_index, row in enumerate(pin_rows):
+            for column_index, value in enumerate(row):
+                if value is None:
+                    spacer = QLabel("")
+                    spacer.setFixedSize(36, 32)
+                    grid.addWidget(spacer, row_index, column_index)
+                    continue
+                cell = self._make_pin_cell(value)
+                self.pin_cells[value] = cell
+                grid.addWidget(cell, row_index, column_index)
+        pin_layout.addLayout(grid)
+
+
         plots_frame = QFrame()
         plots_layout = QGridLayout(plots_frame)
         plots_layout.setContentsMargins(0, 0, 0, 0)
         plots_layout.setSpacing(8)
 
-        self.trajectory_plot = self._make_plot("Touch Trajectory")
-        self.force_plot = self._make_plot("Force / Radius Timeline")
-        self.signature_plot = self._make_plot("Signature Layer")
-        self.groove_plot = self._make_plot("Groove View")
-        self.phase_plot = self._make_plot("Phase Timeline", minimum_height=140)
+        card_height = 260
+        self.trajectory_plot = self._make_plot("Touch Trajectory", minimum_height=card_height)
+        self.force_plot = self._make_plot("Force / Radius Timeline", minimum_height=card_height)
+        self.signature_plot = self._make_plot("Signature Layer", minimum_height=card_height)
+        self.groove_plot = self._make_plot("Groove View", minimum_height=card_height)
+        self.phase_plot = self._make_plot("Phase Timeline", minimum_height=card_height)
+        self.pin_mirror_plot = self.pin_mirror_frame
 
         plots_layout.addWidget(self.trajectory_plot, 0, 0)
         plots_layout.addWidget(self.force_plot, 0, 1)
-        plots_layout.addWidget(self.signature_plot, 1, 0)
-        plots_layout.addWidget(self.groove_plot, 1, 1)
-        plots_layout.addWidget(self.phase_plot, 2, 0, 1, 2)
+        plots_layout.addWidget(self.signature_plot, 0, 2)
+        plots_layout.addWidget(self.groove_plot, 1, 0)
+        plots_layout.addWidget(self.phase_plot, 1, 1)
+        plots_layout.addWidget(self.pin_mirror_plot, 1, 2)
+
+        for column in range(3):
+            plots_layout.setColumnStretch(column, 1)
+        for row in range(2):
+            plots_layout.setRowStretch(row, 1)
 
         root_layout.addWidget(plots_frame, 1)
 
@@ -252,6 +340,63 @@ class LiveDashboardWidget(QWidget):
         )
         return chip
 
+    def _make_pin_cell(self, text: str) -> QLabel:
+        cell = QLabel(text)
+        cell.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cell.setFixedSize(40, 36)
+        cell.setStyleSheet(
+            """
+            QLabel {
+                color: #f5f5f7;
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.10);
+                border-radius: 7px;
+                font-family: Menlo, Monaco, monospace;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            """
+        )
+        return cell
+
+    def _apply_pin_highlight(self, key: str | None) -> None:
+        for digit, cell in getattr(self, "pin_cells", {}).items():
+            highlighted = key == digit
+            cell.setStyleSheet(
+                """
+                QLabel {
+                    color: #f5f5f7;
+                    background: rgba(52, 199, 89, 0.22);
+                    border: 1px solid rgba(52, 199, 89, 0.95);
+                    border-radius: 7px;
+                    font-family: Menlo, Monaco, monospace;
+                    font-size: 13px;
+                    font-weight: 700;
+                }
+                """
+                if highlighted
+                else """
+                QLabel {
+                    color: #f5f5f7;
+                    background: rgba(255, 255, 255, 0.08);
+                    border: 1px solid rgba(255, 255, 255, 0.10);
+                    border-radius: 7px;
+                    font-family: Menlo, Monaco, monospace;
+                    font-size: 13px;
+                    font-weight: 600;
+                }
+                """
+            )
+
+    def _clear_pin_highlight(self, token: int) -> None:
+        if getattr(self, "_pin_highlight_token", 0) != token:
+            return
+        self._apply_pin_highlight(None)
+
+    def _flash_pin_action(self, action: str, color: str) -> None:
+        self.pin_feedback_label.setText(f"Action: {action}")
+        self.pin_feedback_label.setStyleSheet(f"color: {color}; font-size: 11px;")
+
     def _make_plot(self, title: str, minimum_height: int = 240) -> pg.PlotWidget:
         plot = pg.PlotWidget(title=title)
         plot.setMinimumHeight(minimum_height)
@@ -287,6 +432,7 @@ class LiveDashboardWidget(QWidget):
 
             self._update_plot_surfaces(snapshot, active_session)
             self._update_debug_panel(snapshot)
+            self._update_control_message(snapshot)
         except Exception as error:  # defensive: keep refresh loop alive
             error_key = f"{type(error).__name__}:{error}"
             if error_key not in self._plot_error_keys:
@@ -303,6 +449,8 @@ class LiveDashboardWidget(QWidget):
             "activeSessionId": snapshot.active_session_id,
             "eventCount": snapshot.event_count,
             "touchCount": snapshot.touch_count,
+            "tapCount": snapshot.tap_count,
+            "markerCount": snapshot.marker_count,
             "sampleRateHz": snapshot.sample_rate_hz,
             "lastEventTimestamp": snapshot.last_event_timestamp,
             "lastError": snapshot.last_error,
@@ -325,6 +473,16 @@ class LiveDashboardWidget(QWidget):
         self.debug_status_box.setPlainText(json.dumps(diagnostics, indent=2, sort_keys=True))
         self._update_debug_ips(snapshot)
         self._update_stability_panel(snapshot)
+        self._update_pin_mirror(snapshot)
+
+    def _update_control_message(self, snapshot: TelemetrySnapshot) -> None:
+        message = snapshot.control_message
+        if message:
+            self.control_message_label.setText(message)
+            self.control_message_label.setVisible(True)
+        else:
+            self.control_message_label.clear()
+            self.control_message_label.setVisible(False)
 
     def _update_debug_ips(self, snapshot: TelemetrySnapshot) -> None:
         if snapshot.suggested_lan_ip and snapshot.suggested_lan_ip != "unavailable":
@@ -354,7 +512,7 @@ class LiveDashboardWidget(QWidget):
         self._render_force_radius(times, forces, radii)
         self._render_signature_layer(forces, radii, phases)
         self._render_groove_view(xs, ys, forces, radii, times, phases)
-        self._render_phase_timeline(times, phases)
+        self._render_phase_timeline(times, phases, events)
 
     def _clear_plots(self) -> None:
         for plot in [self.trajectory_plot, self.force_plot, self.signature_plot, self.groove_plot, self.phase_plot]:
@@ -440,7 +598,7 @@ class LiveDashboardWidget(QWidget):
         plot.setLabel("left", "Groove Y")
         plot.setLabel("bottom", "Groove X")
 
-    def _render_phase_timeline(self, times: np.ndarray, phases: np.ndarray) -> None:
+    def _render_phase_timeline(self, times: np.ndarray, phases: np.ndarray, events: list[dict[str, Any]] | None = None) -> None:
         plot = self.phase_plot
         plot.clear()
         times, phases = self._guard_series_pair(times, phases)
@@ -457,11 +615,10 @@ class LiveDashboardWidget(QWidget):
                 symbolPen=pg.mkPen(None),
             )
         )
-        plot.setLabel("left", "Phase", units="began/moved/ended/cancelled")
+        plot.setLabel("left", "")
         plot.setLabel("bottom", "Timestamp")
-        plot.getAxis("left").setTicks([
-            [(0, "began"), (1, "moved"), (2, "ended"), (-1, "cancelled")]
-        ])
+        plot.hideAxis("left")
+        plot.getAxis("bottom").setStyle(tickTextOffset=4)
 
     def _update_stability_panel(self, snapshot: TelemetrySnapshot) -> None:
         active_session = next((session for session in snapshot.sessions if session.get("sessionId") == snapshot.active_session_id), None)
@@ -490,6 +647,71 @@ class LiveDashboardWidget(QWidget):
         self.jitter_label.setText(f"jitter: {jitter_level:.3f}")
         self.stability_label.setText(f"force/radius stability: {((force_stability + radius_stability) / 2.0):.3f}")
         self.sample_health_label.setText(f"sample-rate health: {sample_rate_health:.2f}")
+
+    def _update_pin_mirror(self, snapshot: TelemetrySnapshot) -> None:
+        active_session = next((session for session in snapshot.sessions if session.get("sessionId") == snapshot.active_session_id), None)
+        events = [
+            event
+            for event in (active_session or {}).get("events", [])
+            if event.get("messageType") == "touch_event"
+            and (
+                event.get("experimentMode") == "pin_entry"
+                or event.get("digit") is not None
+                or event.get("keypadButtonId") is not None
+                or event.get("isPinSubmit") is not None
+                or event.get("isPinClear") is not None
+            )
+        ]
+        if not events:
+            self.pin_sequence_label.setText("PIN: _ _ _ _")
+            self.pin_detail_label.setText("Waiting for PIN input")
+            self.pin_feedback_label.setText("Action: —")
+            self.pin_feedback_label.setStyleSheet("color: #c7c7cc; font-size: 11px;")
+            self._apply_pin_highlight(None)
+            return
+
+        latest = events[-1]
+        entered_pin = str(latest.get("enteredPinSoFar") or "")
+        sequence_id = str(latest.get("pinSequenceId") or "—")
+        digit = latest.get("digit")
+        digit_index = latest.get("digitIndex")
+        is_submit = bool(latest.get("isPinSubmit"))
+        is_clear = bool(latest.get("isPinClear"))
+
+        self.pin_sequence_label.setText(f"PIN: {self._formatted_pin_sequence(entered_pin)}")
+        self.pin_detail_label.setText(
+            f"Digit {digit if digit is not None else '—'} • Index {digit_index if digit_index is not None else '—'} • Seq {self._short_session_id(sequence_id)}"
+        )
+
+        if is_clear:
+            self.pin_feedback_label.setText("Action: clear")
+            self.pin_feedback_label.setStyleSheet("color: #ff9f0a; font-size: 11px;")
+            self._apply_pin_highlight(None)
+            return
+
+        if is_submit:
+            self.pin_feedback_label.setText(f"Action: submit • {self._formatted_pin_sequence(entered_pin)}")
+            self.pin_feedback_label.setStyleSheet("color: #34c759; font-size: 11px;")
+            self._apply_pin_highlight(None)
+            return
+
+        self.pin_feedback_label.setText("Action: digit")
+        self.pin_feedback_label.setStyleSheet("color: #c7c7cc; font-size: 11px;")
+        if isinstance(digit, str) and digit in self.pin_cells:
+            self._pin_highlight_token += 1
+            token = self._pin_highlight_token
+            self._apply_pin_highlight(digit)
+            QTimer.singleShot(320, lambda token=token: self._clear_pin_highlight(token))
+        else:
+            self._apply_pin_highlight(None)
+
+
+    def _formatted_pin_sequence(self, entered_pin: str, length: int = 4) -> str:
+        cleaned = [char for char in entered_pin if char.isdigit()]
+        display: list[str] = cleaned[:length]
+        while len(display) < length:
+            display.append("_")
+        return " ".join(display)
 
     def _sample_rate_health(self, times: np.ndarray, reported_sample_rate: float) -> float:
         if len(times) < 2:

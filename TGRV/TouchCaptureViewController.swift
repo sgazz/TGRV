@@ -48,6 +48,7 @@ final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelega
     private var connectButton: UIButton?
     private var disconnectButton: UIButton?
     private var saveButton: UIButton?
+    private var resetButton: UIButton?
     private var connectionTestButton: UIButton?
     private var debugToggleButton: UIButton?
     private var pinButtons: [PINKeypadButton] = []
@@ -64,6 +65,8 @@ final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelega
     private var pinTrialIndex: Int?
     private var pinTrialTotal: Int?
     private var pinDisplayIsMasked = true
+    private var tapCount = 0
+    private var markerCount = 0
 
     override func loadView() {
         view = UIView()
@@ -127,6 +130,9 @@ final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelega
     }
 
     func captureView(_ view: TouchCaptureSurfaceView, didReceive touches: Set<UITouch>, phase: TouchPhase, event: UIEvent?) {
+        if phase == .began {
+            tapCount += touches.count
+        }
         let totalEvents = TouchLogger.shared.recordTouches(touches, phase: phase, in: view, event: event)
         statusLabel.text = statusHUDText(eventCountOverride: totalEvents)
         refreshTelemetryStatus()
@@ -137,9 +143,7 @@ final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelega
     }
 
     @objc private func handleDoubleTap() {
-        TouchLogger.shared.resetSession()
-        statusLabel.text = statusHUDText(eventCountOverride: 0)
-        refreshTelemetryStatus()
+        performSyncReset()
     }
 
     @objc private func exportSession() {
@@ -166,6 +170,26 @@ final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelega
     @objc private func toggleDebugPanel() {
         print("Debug button tapped")
         setDebugPanelVisible(!isDebugPanelVisible)
+    }
+
+    @objc private func performSyncReset() {
+        let snapshotBeforeReset = TouchLogger.shared.liveTelemetrySnapshot()
+        let wasConnected = snapshotBeforeReset.connectionState == .connected
+        let result = TouchLogger.shared.resetSession()
+        enteredPin.removeAll(keepingCapacity: true)
+        tapCount = 0
+        markerCount = 0
+        pinTrialIndex = nil
+        pinTrialTotal = nil
+        pinSequenceId = UUID()
+        updatePinDisplay()
+        let shortSession = shortSessionId(result.newSessionId)
+        refreshTelemetryStatus()
+        if wasConnected {
+            statusLabel.text = "Reset sent • Session: \(shortSession)"
+        } else {
+            statusLabel.text = "Reset local only — telemetry disconnected • Session: \(shortSession)"
+        }
     }
 
     @objc private func closeDebugPanel() {
@@ -334,13 +358,19 @@ final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelega
         exportButton.setTitle("Export", for: .normal)
         exportButton.addTarget(self, action: #selector(exportSession), for: .touchUpInside)
 
+        let resetButton = UIButton(type: .system)
+        resetButton.setTitle("Reset", for: .normal)
+        resetButton.addTarget(self, action: #selector(performSyncReset), for: .touchUpInside)
+        resetButton.isUserInteractionEnabled = true
+
         let debugButton = UIButton(type: .system)
         debugButton.setTitle("Debug", for: .normal)
         debugButton.addTarget(self, action: #selector(toggleDebugPanel), for: .touchUpInside)
         debugButton.isUserInteractionEnabled = true
         self.debugToggleButton = debugButton
+        self.resetButton = resetButton
 
-        let buttonsRow = UIStackView(arrangedSubviews: [exportButton, debugButton])
+        let buttonsRow = UIStackView(arrangedSubviews: [exportButton, resetButton, debugButton])
         buttonsRow.axis = .horizontal
         buttonsRow.spacing = 10
         buttonsRow.alignment = .center
@@ -770,6 +800,7 @@ final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelega
 
     private func handlePINButtonTap(_ button: PINKeypadButton, touch: UITouch, phase: TouchPhase, event: UIEvent?) {
         startPinSequenceIfNeeded()
+        tapCount += 1
 
         let currentEnteredPin = enteredPin
         let digitIndex: Int?
@@ -825,6 +856,7 @@ final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelega
         button.currentTouchId = nil
 
         if button.spec == .submit {
+            markerCount += 1
             pinSequenceId = UUID()
             enteredPin.removeAll(keepingCapacity: true)
         }
@@ -889,7 +921,7 @@ final class TouchCaptureViewController: UIViewController, TouchCaptureViewDelega
     private func statusHUDText(snapshot: LiveTelemetrySnapshot? = nil, eventCountOverride: Int? = nil) -> String {
         let currentSnapshot = snapshot ?? TouchLogger.shared.liveTelemetrySnapshot()
         let events = eventCountOverride ?? TouchLogger.shared.eventCount()
-        return "Session: \(shortSessionId(SessionManager.shared.currentSessionId()))  Events: \(events)  Live: \(currentSnapshot.connectionState.rawValue)"
+        return "Session: \(shortSessionId(SessionManager.shared.currentSessionId()))  Taps: \(tapCount)  Markers: \(markerCount)  Events: \(events)  Live: \(currentSnapshot.connectionState.rawValue)"
     }
 
     private func shortSessionId(_ sessionId: UUID) -> String {

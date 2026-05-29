@@ -216,28 +216,29 @@ final class TouchLogger {
         return try ExportManager.export(session: currentSessionExport())
     }
 
-    func resetSession() {
-        if telemetryHostConfigured {
-            telemetryClient.sendLifecycle(
-                .sessionEnd,
-                sessionId: SessionManager.shared.currentSessionId(),
-                deviceType: Self.currentDeviceTypeString,
-                exportExpected: false
-            )
-        }
+    func resetSession() -> (oldSessionId: UUID, newSessionId: UUID) {
+        let oldSessionId = SessionManager.shared.currentSessionId()
+        let connectedBeforeReset = telemetryClient.snapshot().connectionState == .connected
+        let newSessionInfo = SessionManager.shared.resetSession()
         queue.sync {
             events.removeAll(keepingCapacity: true)
             touchStates.removeAll(keepingCapacity: true)
         }
-        _ = SessionManager.shared.resetSession()
-        if telemetryHostConfigured {
+        if telemetryHostConfigured && connectedBeforeReset {
+            telemetryClient.sendReset(
+                sessionId: oldSessionId,
+                newSessionId: newSessionInfo.sessionId,
+                deviceType: Self.currentDeviceTypeString,
+                reason: "user_reset"
+            )
             telemetryClient.sendLifecycle(
                 .sessionStart,
-                sessionId: SessionManager.shared.currentSessionId(),
+                sessionId: newSessionInfo.sessionId,
                 deviceType: Self.currentDeviceTypeString,
                 exportExpected: true
             )
         }
+        return (oldSessionId, newSessionInfo.sessionId)
     }
 
     func startLiveTelemetrySession() {
@@ -332,6 +333,8 @@ final class TouchLogger {
             keypadAction: nil,
             expectedPin: nil,
             enteredPinSoFar: nil,
+            isPinSubmit: nil,
+            isPinClear: nil,
             buttonFrameX: nil,
             buttonFrameY: nil,
             buttonFrameWidth: nil,
@@ -403,6 +406,8 @@ final class TouchLogger {
             keypadAction: pinMetadata?.keypadAction,
             expectedPin: pinMetadata?.expectedPin,
             enteredPinSoFar: pinMetadata?.enteredPinSoFar,
+            isPinSubmit: pinMetadata?.keypadAction == "submit" ? true : nil,
+            isPinClear: pinMetadata?.keypadAction == "clear" ? true : nil,
             buttonFrameX: pinMetadata?.buttonFrameX,
             buttonFrameY: pinMetadata?.buttonFrameY,
             buttonFrameWidth: pinMetadata?.buttonFrameWidth,

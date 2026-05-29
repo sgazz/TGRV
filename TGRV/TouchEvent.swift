@@ -39,6 +39,8 @@ struct TouchPinMetadata: Codable, Equatable, Sendable {
     let keypadAction: String?
     let expectedPin: String?
     let enteredPinSoFar: String?
+    let isPinSubmit: Bool?
+    let isPinClear: Bool?
     let buttonFrameX: Double?
     let buttonFrameY: Double?
     let buttonFrameWidth: Double?
@@ -54,6 +56,8 @@ struct TouchPinMetadata: Codable, Equatable, Sendable {
         keypadAction: String? = nil,
         expectedPin: String? = nil,
         enteredPinSoFar: String? = nil,
+        isPinSubmit: Bool? = nil,
+        isPinClear: Bool? = nil,
         buttonFrame: CGRect? = nil
     ) {
         self.experimentMode = experimentMode
@@ -65,6 +69,8 @@ struct TouchPinMetadata: Codable, Equatable, Sendable {
         self.keypadAction = keypadAction
         self.expectedPin = expectedPin
         self.enteredPinSoFar = enteredPinSoFar
+        self.isPinSubmit = isPinSubmit
+        self.isPinClear = isPinClear
         if let buttonFrame {
             self.buttonFrameX = Double(buttonFrame.origin.x)
             self.buttonFrameY = Double(buttonFrame.origin.y)
@@ -108,6 +114,8 @@ struct TouchEvent: Codable, Identifiable, Equatable {
     let keypadAction: String?
     let expectedPin: String?
     let enteredPinSoFar: String?
+    let isPinSubmit: Bool?
+    let isPinClear: Bool?
     let buttonFrameX: Double?
     let buttonFrameY: Double?
     let buttonFrameWidth: Double?

@@ -36,6 +36,8 @@ class TouchEventRecord:
     keypad_action: str | None = None
     expected_pin: str | None = None
     entered_pin_so_far: str | None = None
+    is_pin_submit: bool | None = None
+    is_pin_clear: bool | None = None
     button_frame_x: float | None = None
     button_frame_y: float | None = None
     button_frame_width: float | None = None
@@ -72,6 +74,8 @@ class TouchEventRecord:
             keypad_action=_optional_string(payload.get("keypadAction")),
             expected_pin=_optional_string(payload.get("expectedPin")),
             entered_pin_so_far=_optional_string(payload.get("enteredPinSoFar")),
+            is_pin_submit=_optional_bool(payload.get("isPinSubmit")),
+            is_pin_clear=_optional_bool(payload.get("isPinClear")),
             button_frame_x=_optional_float(payload.get("buttonFrameX")),
             button_frame_y=_optional_float(payload.get("buttonFrameY")),
             button_frame_width=_optional_float(payload.get("buttonFrameWidth")),
@@ -108,6 +112,8 @@ class TouchEventRecord:
             "keypadAction": self.keypad_action,
             "expectedPin": self.expected_pin,
             "enteredPinSoFar": self.entered_pin_so_far,
+            "isPinSubmit": self.is_pin_submit,
+            "isPinClear": self.is_pin_clear,
             "buttonFrameX": self.button_frame_x,
             "buttonFrameY": self.button_frame_y,
             "buttonFrameWidth": self.button_frame_width,
@@ -235,3 +241,18 @@ def _optional_string(value: Any) -> str | None:
     if value is None or value == "":
         return None
     return str(value)
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "y"}:
+        return True
+    if text in {"false", "0", "no", "n"}:
+        return False
+    return None

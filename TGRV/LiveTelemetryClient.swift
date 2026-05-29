@@ -116,6 +116,28 @@ final class LiveTelemetryClient {
         enqueue(message)
     }
 
+    func sendReset(sessionId: UUID, newSessionId: UUID, deviceType: String, reason: String = "user_reset") {
+        queue.async {
+            self.pendingMessages.removeAll(keepingCapacity: true)
+            self.currentSessionId = newSessionId.uuidString
+            let message = TouchTelemetryMessage.reset(
+                sessionId: sessionId,
+                newSessionId: newSessionId,
+                deviceType: deviceType,
+                reason: reason
+            )
+            do {
+                var data = try JSONSerialization.data(withJSONObject: message.jsonObject(), options: [.sortedKeys])
+                data.append(0x0A)
+                self.pendingMessages.append(data)
+                self.trimBufferIfNeeded()
+                self.flushIfNeeded()
+            } catch {
+                self.lastError = error.localizedDescription
+            }
+        }
+    }
+
     func sendTouchEvent(
         _ event: TouchEvent,
         sampleKind: TouchSampleKind,
@@ -293,7 +315,7 @@ final class LiveTelemetryClient {
 
     private func enqueue(_ message: TouchTelemetryMessage) {
         queue.async {
-            self.currentSessionId = message.sessionId
+            self.currentSessionId = message.newSessionId ?? message.sessionId
             do {
                 var data = try JSONSerialization.data(withJSONObject: message.jsonObject(), options: [.sortedKeys])
                 data.append(0x0A)
