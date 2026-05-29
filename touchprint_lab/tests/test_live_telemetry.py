@@ -2,11 +2,23 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import socket
 import tempfile
 import time
 import unittest
 from pathlib import Path
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+try:  # pragma: no cover - optional UI dependency in some test environments
+    from PyQt6.QtWidgets import QApplication
+    from touchprint_lab.ui.live_dashboard import LiveDashboardWidget
+    PYQT_AVAILABLE = True
+except Exception:  # pragma: no cover - keep telemetry tests runnable without PyQt6
+    QApplication = None  # type: ignore[assignment]
+    LiveDashboardWidget = None  # type: ignore[assignment]
+    PYQT_AVAILABLE = False
 
 from touchprint_lab.analyzer.dataset import DatasetManager
 from touchprint_lab.analyzer.models import TouchSessionRecord
@@ -45,6 +57,42 @@ class LiveTelemetryTests(unittest.TestCase):
         self.assertEqual(message.message_type, TelemetryMessageType.TOUCH_EVENT)
         self.assertEqual(message.session_id, "session-123")
         self.assertEqual(message.device_type, "iPad")
+
+    def test_message_validation_accepts_pin_payload(self) -> None:
+        payload = {
+            "messageType": "touch_event",
+            "sessionId": "session-pin-001",
+            "touchId": "touch-pin-001",
+            "timestamp": 123.456,
+            "phase": "ended",
+            "x": 12.5,
+            "y": 34.5,
+            "force": 0.42,
+            "maximumPossibleForce": 1.0,
+            "majorRadius": 18.2,
+            "deviceType": "iPhone",
+            "inputType": "finger",
+            "exportExpected": True,
+            "experimentMode": "pin_entry",
+            "pinSequenceId": "pin-seq-123",
+            "digit": "2",
+            "digitIndex": 2,
+            "keypadButtonId": "digit_2",
+            "enteredPinSoFar": "12",
+            "isPinSubmit": False,
+            "isPinClear": False,
+            "buttonFrameX": 100.0,
+            "buttonFrameY": 220.0,
+            "buttonFrameWidth": 80.0,
+            "buttonFrameHeight": 60.0,
+        }
+        message = TelemetryMessage.from_payload(payload)
+        self.assertEqual(message.experiment_mode, "pin_entry")
+        self.assertEqual(message.digit, "2")
+        self.assertEqual(message.digit_index, 2)
+        self.assertEqual(message.entered_pin_so_far, "12")
+        self.assertFalse(message.is_pin_submit or False)
+        self.assertFalse(message.is_pin_clear or False)
 
     def test_message_validation_rejects_malformed_payload(self) -> None:
         with self.assertRaises(TelemetryMessageValidationError):
@@ -200,6 +248,61 @@ class LiveTelemetryTests(unittest.TestCase):
                 self.assertIn("serverTime", payload)
             finally:
                 server.stop()
+
+    def test_reset_message_clears_live_state_and_pin_mirror(self) -> None:
+        if not PYQT_AVAILABLE:
+            self.skipTest("PyQt6 is not available in this test environment.")
+        generator = SyntheticTouchGenerator()
+        session = generator.generate_session("pin", seed=808, participant_index=5, session_index=2)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            paths = make_paths(Path(tmp_dir))
+            dataset_manager = DatasetManager(paths)
+            incoming_path = paths.incoming / f"{session.session_id}.json"
+            generator.write_session(session, incoming_path)
+            imported = dataset_manager.import_session_file(incoming_path)
+            self.assertIsNotNone(imported)
+            assert imported is not None
+            imported_files = {
+                "raw": imported.session_dir / "raw.json",
+                "protocol": imported.session_dir / "protocol.json",
+                "manifest": imported.session_dir / "manifest.json",
+            }
+            server = LiveTelemetryServer(paths, host="127.0.0.1", port=0)
+            app = QApplication.instance() or QApplication([])
+            widget = LiveDashboardWidget(server)
+            try:
+                self.assertTrue(server.start())
+                self._send_session(server, session)
+                self._wait_for(
+                    lambda: server.snapshot().event_count == len(session.events)
+                    and server.snapshot().export_status == "export_expected"
+                )
+                reset_payload = {
+                    "messageType": "reset",
+                    "sessionId": session.session_id,
+                    "newSessionId": "reset-session-001",
+                    "timestamp": time.time(),
+                    "deviceType": session.device_type,
+                    "exportExpected": False,
+                    "reason": "user_reset",
+                }
+                server.ingest_raw_line(json.dumps(reset_payload))
+                snapshot = server.snapshot()
+                self.assertEqual(snapshot.active_session_id, "reset-session-001")
+                self.assertEqual(snapshot.event_count, 0)
+                self.assertEqual(snapshot.export_status, "live_only")
+                self.assertIsNotNone(snapshot.control_message)
+                for file_path in imported_files.values():
+                    self.assertTrue(file_path.exists())
+                widget.refresh()
+                self.assertEqual(widget.pin_sequence_label.text(), "PIN: _ _ _ _")
+                self.assertEqual(widget.pin_detail_label.text(), "Waiting for PIN input")
+            finally:
+                widget.deleteLater()
+                server.stop()
+                if app is not None:
+                    app.processEvents()
 
     def test_cli_diagnostics_prints_host_guidance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

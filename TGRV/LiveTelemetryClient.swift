@@ -116,6 +116,28 @@ final class LiveTelemetryClient {
         enqueue(message)
     }
 
+    func sendReset(sessionId: UUID, newSessionId: UUID, deviceType: String, reason: String = "user_reset") {
+        queue.async {
+            self.pendingMessages.removeAll(keepingCapacity: true)
+            self.currentSessionId = newSessionId.uuidString
+            let message = TouchTelemetryMessage.reset(
+                sessionId: sessionId,
+                newSessionId: newSessionId,
+                deviceType: deviceType,
+                reason: reason
+            )
+            do {
+                var data = try JSONSerialization.data(withJSONObject: message.jsonObject(), options: [.sortedKeys])
+                data.append(0x0A)
+                self.pendingMessages.append(data)
+                self.trimBufferIfNeeded()
+                self.flushIfNeeded()
+            } catch {
+                self.lastError = error.localizedDescription
+            }
+        }
+    }
+
     func sendTouchEvent(
         _ event: TouchEvent,
         sampleKind: TouchSampleKind,
@@ -123,7 +145,8 @@ final class LiveTelemetryClient {
         sampleCount: Int,
         deviceType: String,
         inputType: String,
-        exportExpected: Bool
+        exportExpected: Bool,
+        pinMetadata: TouchPinMetadata? = nil
     ) {
         let message = TouchTelemetryMessage.touchEvent(
             sessionId: event.sessionId,
@@ -144,7 +167,52 @@ final class LiveTelemetryClient {
             exportExpected: exportExpected,
             sampleKind: sampleKind,
             sampleIndex: sampleIndex,
-            sampleCount: sampleCount
+            sampleCount: sampleCount,
+            pinMetadata: pinMetadata
+        )
+        enqueue(message)
+    }
+
+    func sendPINKeypadEvent(
+        sessionId: UUID,
+        touchId: UUID,
+        timestamp: Double,
+        phase: TouchPhase,
+        x: Double,
+        y: Double,
+        force: Double?,
+        maximumPossibleForce: Double,
+        majorRadius: Double,
+        altitudeAngle: Double?,
+        azimuthAngle: Double?,
+        coalescedCount: Int,
+        predictedCount: Int,
+        deviceType: String,
+        inputType: String,
+        exportExpected: Bool,
+        pinMetadata: TouchPinMetadata
+    ) {
+        let message = TouchTelemetryMessage.touchEvent(
+            sessionId: sessionId,
+            touchId: touchId,
+            timestamp: timestamp,
+            phase: phase,
+            x: x,
+            y: y,
+            force: force,
+            maximumPossibleForce: maximumPossibleForce,
+            majorRadius: majorRadius,
+            altitudeAngle: altitudeAngle,
+            azimuthAngle: azimuthAngle,
+            coalescedCount: coalescedCount,
+            predictedCount: predictedCount,
+            deviceType: deviceType,
+            inputType: inputType,
+            exportExpected: exportExpected,
+            sampleKind: .live,
+            sampleIndex: pinMetadata.digitIndex ?? 0,
+            sampleCount: 1,
+            pinMetadata: pinMetadata
         )
         enqueue(message)
     }
@@ -247,7 +315,7 @@ final class LiveTelemetryClient {
 
     private func enqueue(_ message: TouchTelemetryMessage) {
         queue.async {
-            self.currentSessionId = message.sessionId
+            self.currentSessionId = message.newSessionId ?? message.sessionId
             do {
                 var data = try JSONSerialization.data(withJSONObject: message.jsonObject(), options: [.sortedKeys])
                 data.append(0x0A)

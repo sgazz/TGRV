@@ -48,6 +48,7 @@ class TouchPlotWidget(QWidget):
         controls = QHBoxLayout()
         controls.addWidget(self.play_button)
         controls.addWidget(self.replay_slider, 1)
+        self.controls_row = controls
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.trajectory_plot, 3)
@@ -106,6 +107,10 @@ class TouchPlotWidget(QWidget):
         self.replay_slider.setMaximum(0)
         self.replay_slider.setValue(0)
         self.replay_slider.blockSignals(False)
+
+    def set_compact_mode(self, enabled: bool) -> None:
+        self.play_button.setVisible(not enabled)
+        self.replay_slider.setVisible(not enabled)
 
     def _update_density(self, x: np.ndarray, y: np.ndarray) -> None:
         if len(x) == 0:

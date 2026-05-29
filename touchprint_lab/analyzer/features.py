@@ -34,6 +34,7 @@ except Exception:  # pragma: no cover - optional dependency fallback
         return frequencies, power
 
 from touchprint_lab.analyzer.models import TouchEventRecord, TouchSessionRecord
+from touchprint_lab.utils.numeric import safe_nanstd, safe_nanvar
 
 FEATURE_VERSION = "v1"
 EPSILON = 1e-9
@@ -267,7 +268,7 @@ class FeatureExtractor:
         force_ramp_up_rate = self._force_ramp_up_rate(timestamps, forces)
         release_decay_rate = self._release_decay_rate(timestamps, forces)
         average_radius = float(np.nanmean(radii)) if len(radii) else 0.0
-        radius_variance = float(np.nanvar(radii)) if len(radii) > 1 else 0.0
+        radius_variance = safe_nanvar(radii)
         hold_stability = self._hold_stability(xs, ys, forces)
         stabilization_time = self._stabilization_time(timestamps, xs, ys)
         tremor_frequency_estimate, micro_oscillation_energy, jitter_entropy = self._micro_dynamics(timestamps, xs, ys)
@@ -330,7 +331,7 @@ class FeatureExtractor:
         mean_interval = float(np.mean(interval_array))
         if mean_interval <= EPSILON:
             return 0.0
-        coefficient_of_variation = float(np.std(interval_array) / (mean_interval + EPSILON))
+        coefficient_of_variation = float(safe_nanstd(interval_array) / (mean_interval + EPSILON))
         return float(1.0 / (1.0 + coefficient_of_variation))
 
     @staticmethod
@@ -385,7 +386,7 @@ class FeatureExtractor:
         valid = forces[np.isfinite(forces)]
         if len(valid) == 0:
             return 0.0, 0.0, 0.0
-        return float(np.mean(valid)), float(np.max(valid)), float(np.var(valid)) if len(valid) > 1 else 0.0
+        return float(np.mean(valid)), float(np.max(valid)), safe_nanvar(valid)
 
     @staticmethod
     def _force_ramp_up_rate(timestamps: np.ndarray, forces: np.ndarray) -> float:
@@ -426,7 +427,7 @@ class FeatureExtractor:
         centroid_y = float(np.mean(ys))
         distances = np.sqrt((xs - centroid_x) ** 2 + (ys - centroid_y) ** 2)
         mean_distance = float(np.mean(distances))
-        force_penalty = float(np.nanstd(forces)) if np.isfinite(forces).any() else 0.0
+        force_penalty = float(safe_nanstd(forces)) if np.isfinite(forces).any() else 0.0
         return float(1.0 / (1.0 + mean_distance + force_penalty))
 
     @staticmethod
@@ -494,7 +495,7 @@ class FeatureExtractor:
         acceleration = np.sqrt(np.diff(velocities_x) ** 2 + np.diff(velocities_y) ** 2)
         if len(acceleration) < 2 or np.allclose(acceleration, 0.0):
             return 0
-        prominence = float(np.std(acceleration)) * 0.5
+        prominence = float(safe_nanstd(acceleration)) * 0.5
         peaks, _ = find_peaks(acceleration, prominence=prominence if prominence > 0 else None)
         return int(len(peaks))
 

@@ -26,6 +26,7 @@ class TelemetryMessageType:
     TOUCH_EVENT = "touch_event"
     SESSION_START = "session_start"
     SESSION_END = "session_end"
+    RESET = "reset"
     HEARTBEAT = "heartbeat"
 
 
@@ -33,6 +34,8 @@ class TelemetryMessageType:
 class TelemetryMessage:
     message_type: str
     session_id: str
+    new_session_id: str | None
+    reason: str | None
     timestamp: float
     device_type: str
     export_expected: bool
@@ -51,6 +54,21 @@ class TelemetryMessage:
     sample_kind: str | None = None
     sample_index: int | None = None
     sample_count: int | None = None
+    experiment_mode: str | None = None
+    pin_sequence_id: str | None = None
+    pin_sequence: str | None = None
+    digit: str | None = None
+    digit_index: int | None = None
+    keypad_button_id: str | None = None
+    keypad_action: str | None = None
+    expected_pin: str | None = None
+    entered_pin_so_far: str | None = None
+    is_pin_submit: bool | None = None
+    is_pin_clear: bool | None = None
+    button_frame_x: float | None = None
+    button_frame_y: float | None = None
+    button_frame_width: float | None = None
+    button_frame_height: float | None = None
     payload: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -61,9 +79,28 @@ class TelemetryMessage:
             return cls(
                 message_type=message_type,
                 session_id=session_id,
+                new_session_id=None,
+                reason=None,
                 timestamp=time.time(),
                 device_type=str(payload.get("deviceType", "unknown")).strip() or "unknown",
                 export_expected=bool(payload.get("exportExpected", False)),
+                payload=dict(payload),
+            )
+        if message_type == TelemetryMessageType.RESET:
+            session_id = str(payload.get("sessionId", "")).strip()
+            if not session_id:
+                raise TelemetryMessageValidationError("sessionId is required")
+            timestamp = _optional_float(payload.get("timestamp")) or time.time()
+            device_type = str(payload.get("deviceType", "unknown")).strip() or "unknown"
+            export_expected = _optional_bool(payload.get("exportExpected")) or False
+            return cls(
+                message_type=message_type,
+                session_id=session_id,
+                new_session_id=_optional_string(payload.get("newSessionId")),
+                reason=_optional_string(payload.get("reason")) or "user_reset",
+                timestamp=timestamp,
+                device_type=device_type,
+                export_expected=export_expected,
                 payload=dict(payload),
             )
         if message_type not in {
@@ -100,6 +137,21 @@ class TelemetryMessage:
         sample_kind = _optional_string(payload.get("sampleKind"))
         sample_index = _optional_int(payload.get("sampleIndex"))
         sample_count = _optional_int(payload.get("sampleCount"))
+        experiment_mode = _optional_string(payload.get("experimentMode"))
+        pin_sequence_id = _optional_string(payload.get("pinSequenceId"))
+        pin_sequence = _optional_string(payload.get("pinSequence"))
+        digit = _optional_string(payload.get("digit"))
+        digit_index = _optional_int(payload.get("digitIndex"))
+        keypad_button_id = _optional_string(payload.get("keypadButtonId"))
+        keypad_action = _optional_string(payload.get("keypadAction"))
+        expected_pin = _optional_string(payload.get("expectedPin"))
+        entered_pin_so_far = _optional_string(payload.get("enteredPinSoFar"))
+        is_pin_submit = _optional_bool(payload.get("isPinSubmit"))
+        is_pin_clear = _optional_bool(payload.get("isPinClear"))
+        button_frame_x = _optional_float(payload.get("buttonFrameX"))
+        button_frame_y = _optional_float(payload.get("buttonFrameY"))
+        button_frame_width = _optional_float(payload.get("buttonFrameWidth"))
+        button_frame_height = _optional_float(payload.get("buttonFrameHeight"))
 
         if message_type == TelemetryMessageType.TOUCH_EVENT:
             missing = [name for name, value in {
@@ -116,6 +168,8 @@ class TelemetryMessage:
         return cls(
             message_type=message_type,
             session_id=session_id,
+            new_session_id=_optional_string(payload.get("newSessionId")),
+            reason=_optional_string(payload.get("reason")),
             timestamp=timestamp,
             device_type=device_type,
             export_expected=export_expected,
@@ -134,6 +188,21 @@ class TelemetryMessage:
             sample_kind=sample_kind,
             sample_index=sample_index,
             sample_count=sample_count,
+            experiment_mode=experiment_mode,
+            pin_sequence_id=pin_sequence_id,
+            pin_sequence=pin_sequence,
+            digit=digit,
+            digit_index=digit_index,
+            keypad_button_id=keypad_button_id,
+            keypad_action=keypad_action,
+            expected_pin=expected_pin,
+            entered_pin_so_far=entered_pin_so_far,
+            is_pin_submit=is_pin_submit,
+            is_pin_clear=is_pin_clear,
+            button_frame_x=button_frame_x,
+            button_frame_y=button_frame_y,
+            button_frame_width=button_frame_width,
+            button_frame_height=button_frame_height,
             payload=dict(payload),
         )
 
@@ -143,6 +212,8 @@ class TelemetryMessage:
             {
                 "messageType": self.message_type,
                 "sessionId": self.session_id,
+                "newSessionId": self.new_session_id,
+                "reason": self.reason,
                 "timestamp": self.timestamp,
                 "deviceType": self.device_type,
                 "exportExpected": self.export_expected,
@@ -161,6 +232,21 @@ class TelemetryMessage:
                 "sampleKind": self.sample_kind,
                 "sampleIndex": self.sample_index,
                 "sampleCount": self.sample_count,
+                "experimentMode": self.experiment_mode,
+                "pinSequenceId": self.pin_sequence_id,
+                "pinSequence": self.pin_sequence,
+                "digit": self.digit,
+                "digitIndex": self.digit_index,
+                "keypadButtonId": self.keypad_button_id,
+                "keypadAction": self.keypad_action,
+                "expectedPin": self.expected_pin,
+                "enteredPinSoFar": self.entered_pin_so_far,
+                "isPinSubmit": self.is_pin_submit,
+                "isPinClear": self.is_pin_clear,
+                "buttonFrameX": self.button_frame_x,
+                "buttonFrameY": self.button_frame_y,
+                "buttonFrameWidth": self.button_frame_width,
+                "buttonFrameHeight": self.button_frame_height,
             }
         )
         return payload
@@ -179,6 +265,8 @@ class TelemetrySessionState:
     last_received_at: float | None = None
     event_count: int = 0
     touch_count: int = 0
+    tap_count: int = 0
+    marker_count: int = 0
     out_of_order_count: int = 0
     possible_drop_count: int = 0
     warnings: list[str] = field(default_factory=list)
@@ -203,6 +291,10 @@ class TelemetrySessionState:
         if message.message_type == TelemetryMessageType.TOUCH_EVENT:
             self.event_count += 1
             self.touch_count = len({event.touch_id for event in self.events if event.touch_id})
+            if message.phase == "began":
+                self.tap_count += 1
+            if message.experiment_mode == "pin_entry" and message.keypad_action == "submit":
+                self.marker_count += 1
             if self.last_event_timestamp is not None:
                 delta = message.timestamp - self.last_event_timestamp
                 if delta < -1e-9:
@@ -249,6 +341,8 @@ class TelemetrySessionState:
             "lastEventTimestamp": self.last_event_timestamp,
             "eventCount": self.event_count,
             "touchCount": self.unique_touch_count,
+            "tapCount": self.tap_count,
+            "markerCount": self.marker_count,
             "sampleRateHz": self.sample_rate_hz,
             "outOfOrderCount": self.out_of_order_count,
             "possibleDropCount": self.possible_drop_count,
@@ -269,6 +363,8 @@ class TelemetrySnapshot:
     active_session_id: str | None
     event_count: int
     touch_count: int
+    tap_count: int
+    marker_count: int
     sample_rate_hz: float
     last_event_timestamp: float | None
     last_error: str | None
@@ -277,6 +373,7 @@ class TelemetrySnapshot:
     export_status: str
     export_summary: dict[str, Any]
     warnings: list[str]
+    control_message: str | None
     sessions: list[dict[str, Any]]
 
 
@@ -319,6 +416,8 @@ class LiveTelemetryServer:
         self._malformed_messages = 0
         self._dropped_messages = 0
         self._last_error: str | None = None
+        self._last_control_message: str | None = None
+        self._last_control_message_at: float | None = None
         self._sessions: dict[str, TelemetrySessionState] = {}
         self._session_order: list[str] = []
         self.paths.processed.mkdir(parents=True, exist_ok=True)
@@ -382,6 +481,11 @@ class LiveTelemetryServer:
     def ingest_message(self, message: TelemetryMessage) -> None:
         received_at = time.time()
         with self._lock:
+            if message.message_type == TelemetryMessageType.RESET:
+                self._handle_reset(message, received_at)
+                self._last_error = None
+                return
+
             state = self._sessions.get(message.session_id)
             if state is None:
                 state = TelemetrySessionState(session_id=message.session_id)
@@ -395,6 +499,55 @@ class LiveTelemetryServer:
             self._last_error = None
             if message.message_type == TelemetryMessageType.SESSION_END and message.export_expected:
                 state.status = "export_expected"
+
+    def _handle_reset(self, message: TelemetryMessage, received_at: float) -> None:
+        old_session_id = message.session_id
+        new_session_id = message.new_session_id or message.session_id
+        old_state = self._sessions.get(old_session_id)
+        if old_state is not None:
+            old_state.status = "reset_pending"
+            old_state.export_expected = False
+            old_state.ended_at = message.timestamp
+            old_state.last_received_at = received_at
+
+        if new_session_id == old_session_id and old_state is not None:
+            new_state = old_state
+            new_state.events.clear()
+            new_state.event_count = 0
+            new_state.touch_count = 0
+            new_state.tap_count = 0
+            new_state.marker_count = 0
+            new_state.out_of_order_count = 0
+            new_state.possible_drop_count = 0
+            new_state.warnings.clear()
+            new_state.export_mismatch_reasons.clear()
+            new_state.export_summary = {}
+            new_state.last_event_timestamp = None
+            new_state.started_at = message.timestamp
+            new_state.ended_at = None
+            new_state.status = "live_only"
+            new_state.export_expected = False
+            new_state.device_type = message.device_type or new_state.device_type
+            new_state.input_type = message.input_type or new_state.input_type
+            new_state.last_received_at = received_at
+        else:
+            new_state = TelemetrySessionState(
+                session_id=new_session_id,
+                device_type=message.device_type or "unknown",
+                input_type=message.input_type or "unknown",
+                export_expected=False,
+                status="live_only",
+                started_at=message.timestamp,
+                last_received_at=received_at,
+            )
+            self._sessions[new_session_id] = new_state
+            self._session_order.append(new_session_id)
+            while len(self._session_order) > self.max_sessions:
+                removed_session_id = self._session_order.pop(0)
+                self._sessions.pop(removed_session_id, None)
+
+        self._last_control_message = f"Live session reset → {self._short_session_id(new_session_id)}"
+        self._last_control_message_at = received_at
 
     def observe_export(self, session: TouchSessionRecord) -> dict[str, Any]:
         with self._lock:
@@ -454,6 +607,9 @@ class LiveTelemetryServer:
     def snapshot(self) -> TelemetrySnapshot:
         with self._lock:
             active_state = self._active_state()
+            control_message = None
+            if self._last_control_message_at is not None and time.time() - self._last_control_message_at <= 3.0:
+                control_message = self._last_control_message
             return TelemetrySnapshot(
                 connection_status=self.connection_status,
                 server_state="running" if self._running else "stopped",
@@ -463,6 +619,8 @@ class LiveTelemetryServer:
                 active_session_id=active_state.session_id if active_state else None,
                 event_count=active_state.event_count if active_state else 0,
                 touch_count=active_state.unique_touch_count if active_state else 0,
+                tap_count=active_state.tap_count if active_state else 0,
+                marker_count=active_state.marker_count if active_state else 0,
                 sample_rate_hz=active_state.sample_rate_hz if active_state else 0.0,
                 last_event_timestamp=active_state.last_event_timestamp if active_state else None,
                 last_error=self._last_error,
@@ -471,6 +629,7 @@ class LiveTelemetryServer:
                 export_status=active_state.status if active_state else "live_only",
                 export_summary=dict(active_state.export_summary) if active_state else {},
                 warnings=list(active_state.warnings[-10:]) if active_state else [],
+                control_message=control_message,
                 sessions=[self._sessions[session_id].to_snapshot() for session_id in self._session_order if session_id in self._sessions],
             )
 
@@ -498,6 +657,14 @@ class LiveTelemetryServer:
             self._active_connections = max(0, self._active_connections - 1)
         logger.info("Live telemetry client disconnected: %s", remote_address)
 
+    @staticmethod
+    def _short_session_id(session_id: str | None) -> str:
+        if not session_id:
+            return "—"
+        if len(session_id) <= 8:
+            return session_id
+        return f"{session_id[:4]}…{session_id[-4:]}"
+
 
 def _optional_string(value: Any) -> str | None:
     if value is None:
@@ -522,6 +689,21 @@ def _optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError) as exc:
         raise TelemetryMessageValidationError(f"Invalid integer value: {value!r}") from exc
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "y"}:
+        return True
+    if text in {"false", "0", "no", "n"}:
+        return False
+    raise TelemetryMessageValidationError(f"Invalid boolean value: {value!r}")
 
 
 def _coerce_float(value: Any, field_name: str) -> float:
