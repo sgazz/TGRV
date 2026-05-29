@@ -1,0 +1,21 @@
+.DS_Store
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+
+# Python analyzer runtime data
+touchprint_lab/dataset/*
+!touchprint_lab/dataset/.gitkeep
+touchprint_lab/incoming/*
+!touchprint_lab/incoming/.gitkeep
+touchprint_lab/processed/*
+!touchprint_lab/processed/.gitkeep
+touchprint_lab/processed/**/*
+!touchprint_lab/processed/**/.gitkeep
+
+# Xcode user-specific state
+*.xcuserstate
+xcuserdata/
+DerivedData/
