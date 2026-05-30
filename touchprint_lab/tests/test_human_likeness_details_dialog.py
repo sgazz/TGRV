@@ -11,6 +11,7 @@ except Exception:  # pragma: no cover - optional UI dependency
     QApplication = None  # type: ignore
 
 from touchprint_lab.analyzer.human_likeness import HumanLikenessMetrics
+from touchprint_lab.tests.qt_test_utils import get_or_create_qapplication
 try:
     from touchprint_lab.ui.live_dashboard import HumanLikenessDetailsDialog
 except Exception:  # pragma: no cover - optional UI dependency
@@ -37,7 +38,7 @@ class _FakeCalibrationReport:
 class HumanLikenessDetailsDialogTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls._app = QApplication.instance() or QApplication([])
+        cls._app = get_or_create_qapplication()
 
     def _make_metrics(self) -> HumanLikenessMetrics:
         return HumanLikenessMetrics(

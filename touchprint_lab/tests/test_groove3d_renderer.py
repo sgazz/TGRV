@@ -6,6 +6,12 @@ from unittest.mock import patch
 import numpy as np
 
 from touchprint_lab.live.groove3d import Groove3DTrace
+from touchprint_lab.tests.qt_test_utils import get_or_create_qapplication
+
+try:
+    from PyQt6.QtWidgets import QApplication
+except Exception:  # pragma: no cover - optional GUI deps
+    QApplication = None  # type: ignore[assignment]
 
 try:
     from touchprint_lab.rendering.groove3d_renderer import RendererSelection, select_renderer
@@ -14,10 +20,11 @@ except Exception:  # pragma: no cover - optional GUI deps may be missing in CI
     select_renderer = None  # type: ignore[assignment]
 
 
+@unittest.skipUnless(QApplication is not None and select_renderer is not None, "Renderer selection tests require PyQt6.")
 class Groove3DRendererSelectionTests(unittest.TestCase):
-    def setUp(self) -> None:
-        if select_renderer is None:
-            self.skipTest("Renderer selection tests require optional GUI dependencies.")
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._app = get_or_create_qapplication()
 
     def test_non_macos_auto_prefers_opengl_or_fallback(self) -> None:
         with patch("touchprint_lab.rendering.groove3d_renderer.platform.system", return_value="Linux"):

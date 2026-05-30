@@ -35,6 +35,7 @@ from PyQt6.QtWidgets import (
 
 from touchprint_lab.analyzer.human_likeness import HumanLikenessMetrics, compute_human_likeness_metrics
 from touchprint_lab.analyzer.readiness import ReadinessReport, run_system_readiness_check
+from touchprint_lab.live.canvas_mirror import build_canvas_mirror_frame
 from touchprint_lab.live.groove3d import build_groove3d_trace
 from touchprint_lab.analyzer.human_likeness_calibration import run_human_likeness_calibration
 from touchprint_lab.analyzer.human_vs_synthetic_validation import run_human_vs_synthetic_validation
@@ -56,6 +57,7 @@ from touchprint_lab.utils.numeric import safe_nanstd
 from touchprint_lab.utils.paths import TouchprintPaths
 
 logger = logging.getLogger(__name__)
+EMPTY_PIN_LABEL = "PIN: _ _ _ _"
 
 
 @dataclass(slots=True)
@@ -906,7 +908,7 @@ class LiveDashboardWidget(QWidget):
         pin_header = QHBoxLayout()
         pin_title = QLabel("PIN Rhythm Strip")
         pin_title.setStyleSheet("font-weight: 600; font-size: 12px;")
-        self.pin_sequence_label = QLabel("PIN: —")
+        self.pin_sequence_label = QLabel(EMPTY_PIN_LABEL)
         self.pin_sequence_label.setStyleSheet("font-family: Menlo, Monaco, monospace; font-size: 12px;")
         self.pin_sequence_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.pin_rhythm_score_label = QLabel("Consistency: —")
@@ -1032,6 +1034,58 @@ class LiveDashboardWidget(QWidget):
         self.groove3d_reset_camera_button.clicked.connect(self._reset_groove3d_camera)
         self.groove3d_auto_rotate_toggle.toggled.connect(self._on_groove3d_auto_rotate_toggled)
         self.phase_plot = self._make_plot("Phase Timeline", minimum_height=240)
+        self.logger_canvas_frame = QFrame()
+        self.logger_canvas_frame.setMinimumHeight(210)
+        self.logger_canvas_frame.setStyleSheet(
+            """
+            QFrame {
+                background: rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 10px;
+            }
+            QLabel {
+                color: #f5f5f7;
+            }
+            """
+        )
+        logger_canvas_layout = QVBoxLayout(self.logger_canvas_frame)
+        logger_canvas_layout.setContentsMargins(10, 8, 10, 8)
+        logger_canvas_layout.setSpacing(6)
+        logger_canvas_header = QHBoxLayout()
+        logger_canvas_title = QLabel("Logger Canvas Mirror")
+        logger_canvas_title.setStyleSheet("font-weight: 600; font-size: 12px;")
+        self.canvas_clear_button = QPushButton("Clear Mirror")
+        self.canvas_clear_button.setToolTip(live_telemetry_tooltip("canvas_clear", "Clear mirrored canvas."))
+        self.canvas_trails_toggle = QToolButton()
+        self.canvas_trails_toggle.setText("Trails")
+        self.canvas_trails_toggle.setCheckable(True)
+        self.canvas_trails_toggle.setChecked(True)
+        self.canvas_trails_toggle.setToolTip(live_telemetry_tooltip("canvas_trails", "Toggle touch trails."))
+        self.canvas_force_toggle = QToolButton()
+        self.canvas_force_toggle.setText("Force Thickness")
+        self.canvas_force_toggle.setCheckable(True)
+        self.canvas_force_toggle.setChecked(True)
+        self.canvas_force_toggle.setToolTip(
+            live_telemetry_tooltip("canvas_force_thickness", "Use force thickness.")
+        )
+        self.canvas_fit_button = QPushButton("Fit to Surface")
+        self.canvas_fit_button.setToolTip(live_telemetry_tooltip("canvas_fit_surface", "Fit mirrored canvas bounds."))
+        self.canvas_status_label = QLabel("bounds: inferred")
+        self.canvas_status_label.setStyleSheet("font-size: 11px; color: #c7c7cc;")
+        logger_canvas_header.addWidget(logger_canvas_title)
+        logger_canvas_header.addStretch(1)
+        logger_canvas_header.addWidget(self.canvas_status_label)
+        logger_canvas_header.addWidget(self.canvas_trails_toggle)
+        logger_canvas_header.addWidget(self.canvas_force_toggle)
+        logger_canvas_header.addWidget(self.canvas_fit_button)
+        logger_canvas_header.addWidget(self.canvas_clear_button)
+        logger_canvas_layout.addLayout(logger_canvas_header)
+        self.logger_canvas_plot = self._make_plot("Logger Canvas", minimum_height=160)
+        self.logger_canvas_plot.setAspectLocked(True, ratio=1.0)
+        logger_canvas_layout.addWidget(self.logger_canvas_plot, 1)
+        self._canvas_manual_clear_generation = 0
+        self.canvas_clear_button.clicked.connect(self._clear_logger_canvas_mirror)
+        self.canvas_fit_button.clicked.connect(self._fit_logger_canvas_mirror)
 
         self.pressure_frame = QFrame()
         self.pressure_frame.setMinimumHeight(190)
@@ -1174,6 +1228,7 @@ class LiveDashboardWidget(QWidget):
             "signature_layer": PanelSpec("medium", 200, 150, False),
             "groove_view": PanelSpec("medium", 200, 150, True),
             "groove_view_3d": PanelSpec("medium", 210, 160, True),
+            "logger_canvas_mirror": PanelSpec("high", 210, 160, True),
             "phase_timeline": PanelSpec("low", 160, 100, True),
             "pin_keyboard_mirror": PanelSpec("high", 210, 170, False),
             "pressure_fingerprint": PanelSpec("medium", 190, 140, True),
@@ -1186,6 +1241,7 @@ class LiveDashboardWidget(QWidget):
             "signature_layer": "Signature Layer",
             "groove_view": "Groove View",
             "groove_view_3d": "Groove View 3D",
+            "logger_canvas_mirror": "Logger Canvas Mirror",
             "phase_timeline": "Phase Timeline",
             "pin_keyboard_mirror": "PIN Keyboard Mirror",
             "pressure_fingerprint": "Pressure Fingerprint",
@@ -1198,6 +1254,7 @@ class LiveDashboardWidget(QWidget):
             "signature_layer": self.signature_plot,
             "groove_view": self.groove_plot,
             "groove_view_3d": self.groove3d_frame,
+            "logger_canvas_mirror": self.logger_canvas_frame,
             "phase_timeline": self.phase_plot,
             "pin_keyboard_mirror": self.pin_mirror_frame,
             "pressure_fingerprint": self.pressure_frame,
@@ -1744,12 +1801,14 @@ class LiveDashboardWidget(QWidget):
     def _apply_panel_body_responsiveness(self, panel_id: str, context: PanelRenderContext) -> None:
         if panel_id == "phase_timeline":
             self.phase_plot.setMinimumHeight(80 if context.panel_mode == "mini" else 110 if context.panel_mode == "compact" else 150)
-        if panel_id in {"trajectory", "force_radius", "signature_layer", "groove_view", "pressure_fingerprint", "phase_timeline"}:
+        if panel_id in {"trajectory", "force_radius", "signature_layer", "groove_view", "pressure_fingerprint", "phase_timeline", "logger_canvas_mirror"}:
             self._apply_plot_responsiveness(context)
         if panel_id == "pin_keyboard_mirror":
             self._apply_pin_panel_responsiveness(context)
         elif panel_id == "groove_view_3d":
             self._apply_groove3d_panel_responsiveness(context)
+        elif panel_id == "logger_canvas_mirror":
+            self._apply_canvas_panel_responsiveness(context)
         elif panel_id == "pressure_fingerprint":
             self._apply_pressure_panel_responsiveness(context)
         elif panel_id == "groove_stability":
@@ -1760,12 +1819,35 @@ class LiveDashboardWidget(QWidget):
     def _apply_plot_responsiveness(self, context: PanelRenderContext) -> None:
         hide_axes = context.panel_mode == "mini"
         tick_alpha = 0.10 if context.panel_mode == "mini" else 0.14 if context.panel_mode == "compact" else 0.18
-        for plot in [self.trajectory_plot, self.force_plot, self.signature_plot, self.groove_plot, self.phase_plot, self.pressure_hist_plot]:
+        for plot in [self.trajectory_plot, self.force_plot, self.signature_plot, self.groove_plot, self.phase_plot, self.pressure_hist_plot, self.logger_canvas_plot]:
             plot.showGrid(x=True, y=True, alpha=tick_alpha)
             left_axis = plot.getPlotItem().getAxis("left")
             bottom_axis = plot.getPlotItem().getAxis("bottom")
             left_axis.setStyle(showValues=not hide_axes, tickTextWidth=24 if not hide_axes else 0)
             bottom_axis.setStyle(showValues=not hide_axes, tickTextOffset=2 if not hide_axes else 0)
+
+    def _apply_canvas_panel_responsiveness(self, context: PanelRenderContext) -> None:
+        if context.panel_mode == "mini":
+            self.canvas_status_label.setVisible(False)
+            self.canvas_trails_toggle.setVisible(False)
+            self.canvas_force_toggle.setVisible(False)
+            self.canvas_fit_button.setVisible(False)
+            self.canvas_clear_button.setVisible(False)
+            self.logger_canvas_plot.setMinimumHeight(90)
+        elif context.panel_mode == "compact":
+            self.canvas_status_label.setVisible(True)
+            self.canvas_trails_toggle.setVisible(True)
+            self.canvas_force_toggle.setVisible(True)
+            self.canvas_fit_button.setVisible(False)
+            self.canvas_clear_button.setVisible(False)
+            self.logger_canvas_plot.setMinimumHeight(130)
+        else:
+            self.canvas_status_label.setVisible(True)
+            self.canvas_trails_toggle.setVisible(True)
+            self.canvas_force_toggle.setVisible(True)
+            self.canvas_fit_button.setVisible(True)
+            self.canvas_clear_button.setVisible(True)
+            self.logger_canvas_plot.setMinimumHeight(160)
 
     def _apply_pin_panel_responsiveness(self, context: PanelRenderContext) -> None:
         tiny = context.panel_mode == "mini"
@@ -2049,6 +2131,9 @@ class LiveDashboardWidget(QWidget):
 
     def _update_control_message(self, snapshot: TelemetrySnapshot) -> None:
         message = snapshot.control_message
+        if message and "reset" in message.lower():
+            self.logger_canvas_plot.clear()
+            self.canvas_status_label.setText("bounds: reset")
         if message:
             self.control_message_label.setText(message)
             self.control_message_label.setVisible(True)
@@ -2086,11 +2171,13 @@ class LiveDashboardWidget(QWidget):
         self._render_groove_view(xs, ys, forces, radii, times, phases)
         self._render_phase_timeline(times, phases, events)
         self._update_groove3d(events)
+        self._render_logger_canvas_mirror(events)
 
     def _clear_plots(self) -> None:
-        for plot in [self.trajectory_plot, self.force_plot, self.signature_plot, self.groove_plot, self.phase_plot, self.pressure_hist_plot]:
+        for plot in [self.trajectory_plot, self.force_plot, self.signature_plot, self.groove_plot, self.phase_plot, self.pressure_hist_plot, self.logger_canvas_plot]:
             plot.clear()
         self._update_groove3d([])
+        self._render_logger_canvas_mirror([])
 
     def _render_trajectory(self, xs: np.ndarray, ys: np.ndarray) -> None:
         plot = self.trajectory_plot
@@ -2194,6 +2281,62 @@ class LiveDashboardWidget(QWidget):
         plot.hideAxis("left")
         plot.getAxis("bottom").setStyle(tickTextOffset=4)
 
+    def _clear_logger_canvas_mirror(self) -> None:
+        self._canvas_manual_clear_generation += 1
+        self.logger_canvas_plot.clear()
+        self.canvas_status_label.setText("bounds: cleared")
+
+    def _fit_logger_canvas_mirror(self) -> None:
+        self.logger_canvas_plot.enableAutoRange(x=True, y=True)
+
+    def _render_logger_canvas_mirror(self, events: list[dict[str, Any]]) -> None:
+        self.logger_canvas_plot.clear()
+        frame = build_canvas_mirror_frame(
+            events,
+            use_force_thickness=self.canvas_force_toggle.isChecked(),
+            default_width=2.1,
+        )
+        if not frame.strokes:
+            self.canvas_status_label.setText("bounds: inferred")
+            return
+        self.canvas_status_label.setText("bounds: inferred" if frame.inferred_bounds else "bounds: telemetry surface")
+        show_trails = self.canvas_trails_toggle.isChecked()
+        for stroke in frame.strokes:
+            if stroke.xs.size == 1:
+                self.logger_canvas_plot.addItem(
+                    pg.ScatterPlotItem(
+                        [float(stroke.xs[0])],
+                        [float(stroke.ys[0])],
+                        size=max(5.0, stroke.width * 2.1),
+                        brush=pg.mkBrush(self._phase_color(_phase_to_numeric(stroke.phase), alpha=220)),
+                        pen=pg.mkPen(None),
+                    )
+                )
+                continue
+            color = self._phase_color(_phase_to_numeric(stroke.phase), alpha=220 if show_trails else 120)
+            self.logger_canvas_plot.addItem(
+                pg.PlotDataItem(
+                    stroke.xs,
+                    stroke.ys,
+                    pen=pg.mkPen(color, width=stroke.width),
+                )
+            )
+            if stroke.digit is not None:
+                label = pg.TextItem(text=stroke.digit, color="#f5f5f7", anchor=(0.5, 0.5))
+                label.setPos(float(stroke.xs[-1]), float(stroke.ys[-1]))
+                self.logger_canvas_plot.addItem(label)
+        if frame.latest_point is not None:
+            lx, ly = frame.latest_point
+            self.logger_canvas_plot.addItem(
+                pg.ScatterPlotItem(
+                    [lx],
+                    [ly],
+                    size=11,
+                    brush=pg.mkBrush("#ff453a"),
+                    pen=pg.mkPen(None),
+                )
+            )
+
     def _update_groove3d(self, events: list[dict[str, Any]]) -> None:
         if self.groove3d_renderer is None:
             return
@@ -2230,7 +2373,7 @@ class LiveDashboardWidget(QWidget):
         metrics = compute_pin_rhythm_metrics(events)
 
         if metrics.collecting:
-            self.pin_sequence_label.setText("PIN: —")
+            self.pin_sequence_label.setText(EMPTY_PIN_LABEL)
             self.pin_rhythm_score_label.setText("Consistency: collecting…")
             self.pin_rhythm_bar_label.setText(metrics.bar_text)
             self.pin_detail_label.setText("Waiting for PIN input")

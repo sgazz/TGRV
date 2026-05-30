@@ -30,6 +30,7 @@ class HelpRegistryTests(unittest.TestCase):
             "signature_layer",
             "groove_view",
             "groove_view_3d",
+            "logger_canvas_mirror",
             "phase_timeline",
             "pin_keyboard_mirror",
             "pin_rhythm_strip",
