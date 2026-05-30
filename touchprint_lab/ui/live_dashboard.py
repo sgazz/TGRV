@@ -39,15 +39,10 @@ from touchprint_lab.live.research_metrics import (
     compute_pin_rhythm_metrics,
     compute_pressure_fingerprint_metrics,
 )
+from touchprint_lab.ui.help_registry import panel_help_for_live_panel
 from touchprint_lab.utils.numeric import safe_nanstd
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(slots=True)
-class LiveLayoutState:
-    mode: str = "default"
-    panel_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -88,6 +83,7 @@ class LivePanelCard(QFrame):
         self.collapsed = False
         self._focused = False
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setToolTip("Double-click to focus")
         self.setStyleSheet(
             """
             QFrame {
@@ -125,34 +121,38 @@ class LivePanelCard(QFrame):
         self.title_label = QLabel(title)
         self.title_label.setStyleSheet("font-size: 11px; font-weight: 600;")
         header_layout.addWidget(self.title_label)
+        self.help_button = QToolButton()
+        self.help_button.setText("?")
+        help_payload = panel_help_for_live_panel(panel_id)
+        self.help_button.setToolTip(str(help_payload.get("short_description", "Panel help")))
+        self.help_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.help_button.clicked.connect(lambda: self.dashboard.show_panel_help(self.panel_id))
+        self.help_button.setStyleSheet(
+            """
+            QToolButton {
+                color: #f5f5f7;
+                padding: 2px 6px;
+                border-radius: 7px;
+                background: rgba(255, 255, 255, 0.08);
+                font-size: 10px;
+                min-width: 16px;
+                max-width: 18px;
+            }
+            QToolButton:hover {
+                background: rgba(255, 255, 255, 0.16);
+            }
+            """
+        )
+        header_layout.addWidget(self.help_button)
         header_layout.addStretch(1)
-
-        self.zoom_quarter_button = QToolButton()
-        self.zoom_quarter_button.setText("1/4")
-        self.zoom_quarter_button.setToolTip(f"Focus {title} to about one quarter of the live area")
-        self.zoom_quarter_button.clicked.connect(lambda: self.dashboard.focus_panel(self.panel_id, "quarter"))
-        self.zoom_quarter_button.setCursor(Qt.CursorShape.PointingHandCursor)
-
-        self.zoom_half_button = QToolButton()
-        self.zoom_half_button.setText("1/2")
-        self.zoom_half_button.setToolTip(f"Focus {title} to about one half of the live area")
-        self.zoom_half_button.clicked.connect(lambda: self.dashboard.focus_panel(self.panel_id, "half"))
-        self.zoom_half_button.setCursor(Qt.CursorShape.PointingHandCursor)
-
-        self.restore_button = QToolButton()
-        self.restore_button.setText("Restore")
-        self.restore_button.setToolTip("Restore the default live cockpit layout")
-        self.restore_button.clicked.connect(self.dashboard.restore_live_layout)
-        self.restore_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.restore_button.setVisible(False)
         self.collapse_button = QToolButton()
-        self.collapse_button.setText("Collapse")
+        self.collapse_button.setText("▴")
         self.collapse_button.setToolTip("Collapse or expand panel body")
         self.collapse_button.clicked.connect(self._toggle_collapsed)
         self.collapse_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.collapse_button.setVisible(self.collapsible)
 
-        header_buttons = [self.zoom_quarter_button, self.zoom_half_button, self.restore_button, self.collapse_button]
+        header_buttons = [self.collapse_button]
         for button in header_buttons:
             button.setStyleSheet(
                 """
@@ -186,7 +186,7 @@ class LivePanelCard(QFrame):
 
         layout.addWidget(self.header)
         layout.addWidget(self.body, 1)
-        self._apply_state(False, "default")
+        self._apply_state(False)
 
     def set_compact_mode(self, enabled: bool) -> None:
         minimum_height = max(120, self.compact_min_height - 30) if enabled else self.compact_min_height
@@ -194,14 +194,11 @@ class LivePanelCard(QFrame):
         if self.collapsed:
             self.content_widget.setMinimumHeight(0)
 
-    def _apply_state(self, focused: bool, mode: str) -> None:
+    def _apply_state(self, focused: bool) -> None:
         self._focused = focused
         if focused:
             self.title_label.setText(f"Focused: {self.title}")
             self.title_label.setStyleSheet("font-size: 11px; font-weight: 700; color: #5ac8fa;")
-            self.zoom_quarter_button.setVisible(False)
-            self.zoom_half_button.setVisible(False)
-            self.restore_button.setVisible(True)
             self.collapse_button.setVisible(False)
             self.header.setStyleSheet(
                 """
@@ -218,9 +215,6 @@ class LivePanelCard(QFrame):
         else:
             self.title_label.setText(self.title)
             self.title_label.setStyleSheet("font-size: 11px; font-weight: 600;")
-            self.zoom_quarter_button.setVisible(True)
-            self.zoom_half_button.setVisible(True)
-            self.restore_button.setVisible(False)
             self.collapse_button.setVisible(self.collapsible)
             self.header.setStyleSheet(
                 """
@@ -246,6 +240,10 @@ class LivePanelCard(QFrame):
 
     def _toggle_collapsed(self) -> None:
         self.set_collapsed(not self.collapsed)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        self.dashboard.toggle_panel_focus_modal(self.panel_id)
+        super().mouseDoubleClickEvent(event)
 
     def render_context(self, layout_mode: str, compact_height: bool) -> PanelRenderContext:
         width = max(self.width(), self.content_widget.width(), 1)
@@ -610,14 +608,17 @@ class LiveDashboardWidget(QWidget):
         self.live_server = live_server
         self._plot_error_keys: set[str] = set()
         self._pin_highlight_token = 0
-        self._live_layout_state = LiveLayoutState()
         self._panel_cards: dict[str, LivePanelCard] = {}
         self._panel_specs: dict[str, PanelSpec] = {}
+        self._focused_modal_panel_id: str | None = None
+        self._focus_modal_dialog: QDialog | None = None
+        self._closing_focus_modal = False
         self._layout_mode_override: str = "auto"
         self._responsive_mode: str = "large"
         self._compact_height_mode: bool = False
         self._latest_human_likeness_metrics: HumanLikenessMetrics | None = None
         self._human_likeness_dialog: HumanLikenessDetailsDialog | None = None
+        self._panel_help_dialog: QDialog | None = None
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         pg.setConfigOptions(antialias=True)
 
@@ -1173,31 +1174,7 @@ class LiveDashboardWidget(QWidget):
             shortcut.activated.connect(callback)
             self._shortcuts.append(shortcut)
 
-        register("Escape", self.restore_live_layout)
-        for sequence, panel_id in [
-            ("Ctrl+1", "trajectory"),
-            ("Meta+1", "trajectory"),
-            ("Ctrl+2", "force_radius"),
-            ("Meta+2", "force_radius"),
-            ("Ctrl+3", "groove_view"),
-            ("Meta+3", "groove_view"),
-            ("Ctrl+4", "groove_stability"),
-            ("Meta+4", "groove_stability"),
-            ("Ctrl+5", "human_likeness"),
-            ("Meta+5", "human_likeness"),
-        ]:
-            register(sequence, lambda panel_id=panel_id: self.focus_panel(panel_id, "half"))
-
-    def focus_panel(self, panel_id: str, fraction: str) -> None:
-        if panel_id not in self.panel_cards:
-            return
-        mode = "quarter" if fraction == "quarter" else "half"
-        self._live_layout_state = LiveLayoutState(mode=mode, panel_id=panel_id)
-        self._apply_live_layout()
-
-    def restore_live_layout(self) -> None:
-        self._live_layout_state = LiveLayoutState()
-        self._apply_live_layout()
+        register("Escape", self._close_focus_modal)
 
     def set_layout_mode_override(self, mode: str) -> None:
         normalized = str(mode or "auto").strip().lower()
@@ -1291,17 +1268,16 @@ class LiveDashboardWidget(QWidget):
                 widget.setParent(None)
 
     def _apply_live_layout(self) -> None:
-        state = self._live_layout_state
-        focused_panel = self.panel_cards.get(state.panel_id) if state.panel_id else None
+        focused_panel = self.panel_cards.get(self._focused_modal_panel_id) if self._focused_modal_panel_id else None
         mode = self._responsive_mode
-        compact_mode = state.mode != "default" or mode != "large" or self._compact_height_mode
+        compact_mode = mode != "large" or self._compact_height_mode
         collapsed_panels = self._collapsed_panels_for_mode(mode)
         for panel_id, card in self.panel_cards.items():
             spec = self._panel_specs[panel_id]
             target_min_height = spec.compact_height if compact_mode else spec.minimum_height
             card.content_widget.setMinimumHeight(max(80, target_min_height))
             card.set_compact_mode(compact_mode)
-            card._apply_state(card is focused_panel, state.mode)
+            card._apply_state(card is focused_panel)
             card.set_collapsed(panel_id in collapsed_panels and card is not focused_panel)
 
         self._clear_layout(self.focus_area_layout)
@@ -1315,38 +1291,87 @@ class LiveDashboardWidget(QWidget):
         else:
             self.panel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
-        if focused_panel is None or state.mode == "default":
-            self.focus_area.setVisible(False)
-            self.panel_root_layout.setStretch(0, 0)
-            self.panel_root_layout.setStretch(1, 1)
-            for panel_id, card in self.panel_cards.items():
-                row, column = default_positions[panel_id]
-                self.overview_grid.addWidget(card, row, column)
-            for column in range(max_column + 1):
-                self.overview_grid.setColumnStretch(column, 1)
-            for row in range(max_row + 1):
-                self.overview_grid.setRowStretch(row, 1)
-            return
-
-        self.focus_area.setVisible(True)
-        if focused_panel.collapsible and focused_panel.collapsed:
-            focused_panel.set_collapsed(False)
-        self.focus_area_layout.addWidget(focused_panel)
-        focus_stretch = 1 if state.mode == "quarter" else 2
-        overview_stretch = 3 if state.mode == "quarter" else 2
-        self.panel_root_layout.setStretch(0, focus_stretch)
-        self.panel_root_layout.setStretch(1, overview_stretch)
-
+        self.focus_area.setVisible(False)
+        self.panel_root_layout.setStretch(0, 0)
+        self.panel_root_layout.setStretch(1, 1)
         for panel_id, card in self.panel_cards.items():
-            if card is focused_panel:
-                continue
             row, column = default_positions[panel_id]
-            self.overview_grid.addWidget(card, row, column)
+            if focused_panel is not None and panel_id == self._focused_modal_panel_id:
+                self.overview_grid.addWidget(self._focused_panel_placeholder(card.title), row, column)
+            else:
+                self.overview_grid.addWidget(card, row, column)
         for column in range(max_column + 1):
             self.overview_grid.setColumnStretch(column, 1)
         for row in range(max_row + 1):
             self.overview_grid.setRowStretch(row, 1)
         self._apply_panel_content_responsiveness()
+
+    def _focused_panel_placeholder(self, title: str) -> QWidget:
+        placeholder = QFrame()
+        placeholder.setStyleSheet(
+            """
+            QFrame {
+                background: rgba(255, 255, 255, 0.02);
+                border: 1px dashed rgba(90, 200, 250, 0.45);
+                border-radius: 10px;
+            }
+            QLabel {
+                color: #8e8e93;
+                font-size: 11px;
+            }
+            """
+        )
+        placeholder.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout = QVBoxLayout(placeholder)
+        layout.setContentsMargins(12, 10, 12, 10)
+        message = QLabel(f"{title} opened in focus view")
+        message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(message, 1)
+        return placeholder
+
+    def toggle_panel_focus_modal(self, panel_id: str) -> None:
+        if panel_id not in self.panel_cards:
+            return
+        if self._focused_modal_panel_id == panel_id:
+            self._close_focus_modal()
+            return
+        if self._focused_modal_panel_id is not None:
+            self._close_focus_modal()
+        card = self.panel_cards[panel_id]
+        self._focused_modal_panel_id = panel_id
+        self._apply_live_layout()
+
+        dialog = QDialog(self)
+        dialog.setModal(False)
+        dialog.setWindowTitle(f"{card.title} — Focus")
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.resize(max(760, int(self.width() * 0.70)), max(520, int(self.height() * 0.72)))
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.addWidget(card)
+        escape_shortcut = QShortcut(QKeySequence("Escape"), dialog)
+        escape_shortcut.activated.connect(dialog.close)
+        dialog.finished.connect(self._handle_focus_modal_closed)
+        self._focus_modal_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _close_focus_modal(self) -> None:
+        if self._focus_modal_dialog is None:
+            return
+        if self._closing_focus_modal:
+            return
+        self._closing_focus_modal = True
+        try:
+            self._focus_modal_dialog.close()
+        finally:
+            self._closing_focus_modal = False
+
+    def _handle_focus_modal_closed(self, _result: int) -> None:
+        self._focus_modal_dialog = None
+        self._focused_modal_panel_id = None
+        self._apply_live_layout()
 
     def _apply_panel_content_responsiveness(self) -> None:
         for panel_id, card in self.panel_cards.items():
@@ -1361,6 +1386,7 @@ class LiveDashboardWidget(QWidget):
         elif context.panel_mode == "mini":
             title_size = "9px"
         card.title_label.setStyleSheet(f"font-size: {title_size}; font-weight: 600;")
+        card.help_button.setText("?" if context.panel_mode != "mini" else "ⓘ")
         if card.collapsible:
             card.collapse_button.setText("▾" if card.collapsed else "▴")
 
@@ -1461,6 +1487,53 @@ class LiveDashboardWidget(QWidget):
             self.human_likeness_meta_label.setVisible(True)
             self.human_likeness_flags_label.setVisible(True)
             self.human_likeness_disclaimer.setVisible(True)
+
+    def show_panel_help(self, panel_id: str) -> None:
+        payload = panel_help_for_live_panel(panel_id)
+        dialog = QDialog(self)
+        dialog.setModal(True)
+        dialog.setWindowTitle(f"{payload.get('title', 'Panel Help')} — Help")
+        dialog.resize(560, 520)
+        wrapper = QVBoxLayout(dialog)
+        wrapper.setContentsMargins(12, 12, 12, 12)
+        wrapper.setSpacing(8)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        content_layout = QVBoxLayout(container)
+        content_layout.setContentsMargins(8, 8, 8, 8)
+        content_layout.setSpacing(8)
+
+        def add_section(title: str, text: str) -> None:
+            section_title = QLabel(title)
+            section_title.setStyleSheet("font-size: 12px; font-weight: 700;")
+            section_text = QLabel(text or "N/A")
+            section_text.setWordWrap(True)
+            section_text.setStyleSheet("font-size: 11px; color: #c7c7cc;")
+            content_layout.addWidget(section_title)
+            content_layout.addWidget(section_text)
+
+        name_label = QLabel(str(payload.get("title", panel_id)))
+        name_label.setStyleSheet("font-size: 14px; font-weight: 700; color: #5ac8fa;")
+        content_layout.addWidget(name_label)
+        add_section("What is it?", str(payload.get("short_description", "N/A")))
+        add_section("Why does it matter?", str(payload.get("why_it_matters", "N/A")))
+        add_section("How is it calculated?", str(payload.get("calculation_summary", "N/A")))
+        add_section("How should I interpret it?", str(payload.get("interpretation_notes", "N/A")))
+        tips = payload.get("optional_tips")
+        if tips:
+            add_section("Tips", str(tips))
+        content_layout.addStretch(1)
+        scroll.setWidget(container)
+        wrapper.addWidget(scroll, 1)
+
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(dialog.accept)
+        wrapper.addWidget(close_button, 0, Qt.AlignmentFlag.AlignRight)
+
+        self._panel_help_dialog = dialog
+        dialog.exec()
 
     def refresh(self) -> None:
         snapshot = self.live_server.snapshot()
