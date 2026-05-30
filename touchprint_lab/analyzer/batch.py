@@ -855,7 +855,9 @@ class BatchAnalyzer:
         ax.set_title("Normalized Similarity Distribution")
         ax.set_xlabel("Normalized similarity score")
         ax.set_ylabel("Density")
-        ax.legend(loc="best")
+        handles, labels = ax.get_legend_handles_labels()
+        if handles and labels:
+            ax.legend(loc="best")
         ax.grid(True, alpha=0.2)
         fig.tight_layout()
         fig.savefig(output_path, dpi=180)
@@ -872,7 +874,9 @@ class BatchAnalyzer:
         ax.set_title("ROC-Style Separation Preview")
         ax.set_xlabel("False Positive Rate")
         ax.set_ylabel("True Positive Rate")
-        ax.legend(loc="lower right")
+        handles, labels = ax.get_legend_handles_labels()
+        if handles and labels:
+            ax.legend(loc="lower right")
         ax.grid(True, alpha=0.2)
         fig.tight_layout()
         fig.savefig(output_path, dpi=180)

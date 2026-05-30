@@ -139,7 +139,7 @@ def compute_pin_rhythm_metrics(events: Sequence[Any]) -> PinRhythmMetrics:
             pin_events.append(payload)
 
     if not pin_events:
-        return PinRhythmMetrics(None, [], None, None, None, "PIN: —", "| collecting... |", True)
+        return PinRhythmMetrics(None, [], None, None, None, EMPTY_PIN_LABEL, "| collecting... |", True)
 
     grouped: dict[str, list[dict[str, Any]]] = {}
     for event in pin_events:
@@ -153,7 +153,7 @@ def compute_pin_rhythm_metrics(events: Sequence[Any]) -> PinRhythmMetrics:
     sequence_events = grouped[sequence_id]
     sequence_events = [event for event in sequence_events if event.get("digit") is not None]
     if len(sequence_events) < 2:
-        digit_text = "PIN: " + " ".join(str(event.get("digit", "_")) for event in sequence_events) if sequence_events else "PIN: —"
+        digit_text = "PIN: " + " ".join(str(event.get("digit", "_")) for event in sequence_events) if sequence_events else EMPTY_PIN_LABEL
         return PinRhythmMetrics(sequence_id, [], None, None, None, digit_text, "| collecting... |", True)
 
     sequence_events.sort(key=lambda event: (int(event.get("digitIndex", 10**6) or 10**6), float(event.get("timestamp", 0.0))))
@@ -323,3 +323,4 @@ def _build_rhythm_bar(intervals_ms: Sequence[float]) -> str:
         segment_length = max(3, int(round(10.0 * interval / maximum)))
         segments.append("-" * segment_length)
     return "|" + "|".join(segments) + "|"
+EMPTY_PIN_LABEL = "PIN: _ _ _ _"
