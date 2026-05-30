@@ -141,7 +141,7 @@ class MainWindow(QMainWindow):
         self.feature_inspector = FeatureInspectorWidget()
         self.batch_analysis = BatchAnalysisWidget(self.paths)
         self.protocol_orchestrator = ProtocolOrchestratorWidget(self.paths, self.dataset_manager)
-        self.live_dashboard = LiveDashboardWidget(self.live_telemetry_server)
+        self.live_dashboard = LiveDashboardWidget(self.live_telemetry_server, self.paths)
         self.study_library = StudyLibraryWidget(
             self.paths,
             self.study_manager,

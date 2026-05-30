@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -14,12 +15,14 @@ from PyQt6.QtCore import QTimer, Qt, QUrl
 from PyQt6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
+    QComboBox,
     QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
@@ -31,16 +34,26 @@ from PyQt6.QtWidgets import (
 )
 
 from touchprint_lab.analyzer.human_likeness import HumanLikenessMetrics, compute_human_likeness_metrics
+from touchprint_lab.analyzer.readiness import ReadinessReport, run_system_readiness_check
+from touchprint_lab.live.groove3d import build_groove3d_trace
 from touchprint_lab.analyzer.human_likeness_calibration import run_human_likeness_calibration
 from touchprint_lab.analyzer.human_vs_synthetic_validation import run_human_vs_synthetic_validation
+from touchprint_lab.rendering.groove3d_renderer import Groove3DRendererBase, select_renderer
 from touchprint_lab.live.telemetry_server import LiveTelemetryServer, TelemetrySnapshot
 from touchprint_lab.live.research_metrics import (
     compute_groove_stability_metrics,
     compute_pin_rhythm_metrics,
     compute_pressure_fingerprint_metrics,
 )
-from touchprint_lab.ui.help_registry import panel_help_for_live_panel
+from touchprint_lab.ui.help_registry import (
+    human_likeness_research_guide,
+    live_telemetry_tooltip,
+    panel_help_for_live_panel,
+    panel_tooltip_for_live_panel,
+)
+from touchprint_lab.ui.live_workspace import LiveWorkspaceLayoutManager
 from touchprint_lab.utils.numeric import safe_nanstd
+from touchprint_lab.utils.paths import TouchprintPaths
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +96,9 @@ class LivePanelCard(QFrame):
         self.collapsed = False
         self._focused = False
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.setToolTip("Double-click to focus")
+        panel_tip = panel_tooltip_for_live_panel(panel_id)
+        focus_tip = live_telemetry_tooltip("panel_double_click_focus", "Double-click to open focus view.")
+        self.setToolTip(f"{panel_tip}\n{focus_tip}")
         self.setStyleSheet(
             """
             QFrame {
@@ -120,11 +135,13 @@ class LivePanelCard(QFrame):
 
         self.title_label = QLabel(title)
         self.title_label.setStyleSheet("font-size: 11px; font-weight: 600;")
+        self.title_label.setToolTip(panel_tip)
         header_layout.addWidget(self.title_label)
         self.help_button = QToolButton()
         self.help_button.setText("?")
-        help_payload = panel_help_for_live_panel(panel_id)
-        self.help_button.setToolTip(str(help_payload.get("short_description", "Panel help")))
+        self.help_button.setToolTip(
+            live_telemetry_tooltip("panel_help", "Open panel help.")
+        )
         self.help_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.help_button.clicked.connect(lambda: self.dashboard.show_panel_help(self.panel_id))
         self.help_button.setStyleSheet(
@@ -147,12 +164,40 @@ class LivePanelCard(QFrame):
         header_layout.addStretch(1)
         self.collapse_button = QToolButton()
         self.collapse_button.setText("▴")
-        self.collapse_button.setToolTip("Collapse or expand panel body")
+        self.collapse_button.setToolTip(
+            live_telemetry_tooltip("panel_collapse", "Collapse or expand panel body.")
+        )
         self.collapse_button.clicked.connect(self._toggle_collapsed)
         self.collapse_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.collapse_button.setVisible(self.collapsible)
 
         header_buttons = [self.collapse_button]
+        self.layout_menu_button = QToolButton()
+        self.layout_menu_button.setText("⋯")
+        self.layout_menu_button.setToolTip("Panel layout actions")
+        self.layout_menu_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.layout_menu = QMenu(self)
+        self.action_move_left = self.layout_menu.addAction("Move Left")
+        self.action_move_right = self.layout_menu.addAction("Move Right")
+        self.action_move_up = self.layout_menu.addAction("Move Up")
+        self.action_move_down = self.layout_menu.addAction("Move Down")
+        self.layout_menu.addSeparator()
+        self.action_expand = self.layout_menu.addAction("Expand")
+        self.action_collapse = self.layout_menu.addAction("Collapse")
+        self.layout_menu.addSeparator()
+        self.action_height_up = self.layout_menu.addAction("Increase Height")
+        self.action_height_down = self.layout_menu.addAction("Decrease Height")
+        self.action_move_left.triggered.connect(lambda: self.dashboard.move_panel(self.panel_id, "left"))
+        self.action_move_right.triggered.connect(lambda: self.dashboard.move_panel(self.panel_id, "right"))
+        self.action_move_up.triggered.connect(lambda: self.dashboard.move_panel(self.panel_id, "up"))
+        self.action_move_down.triggered.connect(lambda: self.dashboard.move_panel(self.panel_id, "down"))
+        self.action_expand.triggered.connect(lambda: self.dashboard.set_panel_collapsed(self.panel_id, False))
+        self.action_collapse.triggered.connect(lambda: self.dashboard.set_panel_collapsed(self.panel_id, True))
+        self.action_height_up.triggered.connect(lambda: self.dashboard.adjust_panel_height(self.panel_id, +40))
+        self.action_height_down.triggered.connect(lambda: self.dashboard.adjust_panel_height(self.panel_id, -40))
+        self.layout_menu_button.setMenu(self.layout_menu)
+        self.layout_menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        header_buttons.append(self.layout_menu_button)
         for button in header_buttons:
             button.setStyleSheet(
                 """
@@ -274,6 +319,7 @@ class HumanLikenessDetailsDialog(QDialog):
         self._current_session_id: str | None = None
         self._current_events: list[dict[str, Any]] = []
         self._current_last_timestamp: float | None = None
+        self._research_guide_dialog: QDialog | None = None
         self.setStyleSheet(
             """
             QDialog {
@@ -294,20 +340,54 @@ class HumanLikenessDetailsDialog(QDialog):
         headline.setStyleSheet("font-size: 14px; font-weight: 700; color: #5ac8fa;")
         header_row.addWidget(headline)
         header_row.addStretch(1)
+        self.research_help_button = QToolButton()
+        self.research_help_button.setText("?")
+        self.research_help_button.setToolTip(
+            live_telemetry_tooltip("human_likeness_research_help", "Open Human-Likeness Research Guide.")
+        )
+        self.research_help_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.research_help_button.setStyleSheet(
+            """
+            QToolButton {
+                color: #f5f5f7;
+                padding: 4px 8px;
+                border-radius: 8px;
+                background: rgba(255, 255, 255, 0.10);
+                font-weight: 700;
+            }
+            QToolButton:hover {
+                background: rgba(255, 255, 255, 0.16);
+            }
+            """
+        )
+        self.research_help_button.clicked.connect(self._open_research_guide)
+        header_row.addWidget(self.research_help_button)
         self.evaluate_current_button = QPushButton("Evaluate Current Session")
+        self.evaluate_current_button.setToolTip(
+            live_telemetry_tooltip("evaluate_current_session", "Evaluate buffered live session events.")
+        )
         self.evaluate_current_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.evaluate_current_button.clicked.connect(self._evaluate_current_session)
         header_row.addWidget(self.evaluate_current_button)
         self.run_calibration_button = QPushButton("Run Calibration")
+        self.run_calibration_button.setToolTip(
+            live_telemetry_tooltip("run_calibration", "Run synthetic calibration.")
+        )
         self.run_calibration_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.run_calibration_button.clicked.connect(self._run_calibration)
         header_row.addWidget(self.run_calibration_button)
         self.preview_pdf_button = QPushButton("Preview Calibration PDF")
+        self.preview_pdf_button.setToolTip(
+            live_telemetry_tooltip("preview_calibration_pdf", "Open calibration PDF report.")
+        )
         self.preview_pdf_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.preview_pdf_button.setEnabled(False)
         self.preview_pdf_button.clicked.connect(self._preview_calibration_pdf)
         header_row.addWidget(self.preview_pdf_button)
         self.run_validation_button = QPushButton("Run Human vs Synthetic Validation")
+        self.run_validation_button.setToolTip(
+            live_telemetry_tooltip("run_human_vs_synthetic_validation", "Run human vs synthetic validation.")
+        )
         self.run_validation_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.run_validation_button.clicked.connect(self._run_human_vs_synthetic_validation)
         header_row.addWidget(self.run_validation_button)
@@ -395,6 +475,67 @@ class HumanLikenessDetailsDialog(QDialog):
         layout.addWidget(flags, 1)
 
         self._reset_results()
+
+    def _open_research_guide(self) -> None:
+        payload = human_likeness_research_guide("en")
+        dialog = QDialog(self)
+        dialog.setWindowTitle(str(payload.get("title", "Human-Likeness Research Guide")))
+        dialog.resize(760, 620)
+        dialog.setModal(False)
+        dialog.setStyleSheet(
+            """
+            QDialog {
+                background: #121317;
+            }
+            QLabel {
+                color: #f5f5f7;
+            }
+            """
+        )
+        root_layout = QVBoxLayout(dialog)
+        root_layout.setContentsMargins(10, 10, 10, 10)
+        root_layout.setSpacing(8)
+
+        title_label = QLabel(str(payload.get("title", "Human-Likeness Research Guide")))
+        title_label.setStyleSheet("font-size: 15px; font-weight: 700; color: #5ac8fa;")
+        root_layout.addWidget(title_label)
+
+        subtitle = str(payload.get("subtitle", "")).strip()
+        if subtitle:
+            subtitle_label = QLabel(subtitle)
+            subtitle_label.setStyleSheet("font-size: 11px; color: #c7c7cc;")
+            root_layout.addWidget(subtitle_label)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(6, 6, 6, 6)
+        content_layout.setSpacing(10)
+
+        for section in payload.get("sections", []):
+            heading = QLabel(str(section.get("heading", "Section")))
+            heading.setStyleSheet("font-size: 13px; font-weight: 700; color: #5ac8fa;")
+            body = QLabel(str(section.get("body", "")))
+            body.setWordWrap(True)
+            body.setStyleSheet("font-size: 11px; color: #f5f5f7;")
+            content_layout.addWidget(heading)
+            content_layout.addWidget(body)
+
+        content_layout.addStretch(1)
+        scroll.setWidget(content)
+        root_layout.addWidget(scroll, 1)
+
+        close_button = QPushButton("Close")
+        close_button.setToolTip(live_telemetry_tooltip("close_dialog", "Close this dialog window."))
+        close_button.clicked.connect(dialog.close)
+        root_layout.addWidget(close_button, 0, Qt.AlignmentFlag.AlignRight)
+
+        self._research_guide_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _headline_text(self, metrics: HumanLikenessMetrics) -> str:
         if metrics.human_likeness_score is None:
@@ -603,9 +744,10 @@ class HumanLikenessDetailsDialog(QDialog):
             self.run_validation_button.setText("Run Human vs Synthetic Validation")
 
 class LiveDashboardWidget(QWidget):
-    def __init__(self, live_server: LiveTelemetryServer, parent: QWidget | None = None):
+    def __init__(self, live_server: LiveTelemetryServer, paths: TouchprintPaths, parent: QWidget | None = None):
         super().__init__(parent)
         self.live_server = live_server
+        self.paths = paths
         self._plot_error_keys: set[str] = set()
         self._pin_highlight_token = 0
         self._panel_cards: dict[str, LivePanelCard] = {}
@@ -619,6 +761,12 @@ class LiveDashboardWidget(QWidget):
         self._latest_human_likeness_metrics: HumanLikenessMetrics | None = None
         self._human_likeness_dialog: HumanLikenessDetailsDialog | None = None
         self._panel_help_dialog: QDialog | None = None
+        self._readiness_dialog: QDialog | None = None
+        self._groove3d_last_update_monotonic = 0.0
+        self._groove3d_update_interval_s = 1.0 / 20.0
+        self._groove3d_max_points = 500
+        self._workspace_settings_path = Path(__file__).resolve().parents[2] / "processed" / "settings" / "live_workspace_layout.json"
+        self._workspace: LiveWorkspaceLayoutManager | None = None
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         pg.setConfigOptions(antialias=True)
 
@@ -659,14 +807,34 @@ class LiveDashboardWidget(QWidget):
         status_layout.setSpacing(10)
 
         self.connection_chip = self._make_chip("disconnected")
+        self.connection_chip.setToolTip(live_telemetry_tooltip("status_connection", "Live telemetry connection state."))
         self.device_chip = self._make_chip("device: —")
+        self.device_chip.setToolTip(live_telemetry_tooltip("status_device", "Active source device."))
         self.input_chip = self._make_chip("input: —")
+        self.input_chip.setToolTip(live_telemetry_tooltip("status_input", "Current input mode."))
         self.sample_rate_chip = self._make_chip("sample rate: 0.00 Hz")
+        self.sample_rate_chip.setToolTip(live_telemetry_tooltip("status_sample_rate", "Current sample rate."))
         self.session_chip = self._make_chip("session: —")
+        self.session_chip.setToolTip(live_telemetry_tooltip("status_session", "Current active session."))
         self.export_chip = self._make_chip("export: live_only")
+        self.export_chip.setToolTip(live_telemetry_tooltip("status_export", "Current export verification status."))
+        self.readiness_button = QPushButton("System Readiness")
+        self.readiness_button.setToolTip("Run pre-study readiness checklist and generate readiness report.")
+        self.readiness_button.clicked.connect(self._open_readiness_dialog)
+        self.layout_preset_selector = QComboBox()
+        self.layout_preset_selector.addItems(
+            ["Research Cockpit", "PIN Study", "Human-Likeness Focus", "Groove Analysis", "Compact Screen", "Custom"]
+        )
+        self.layout_preset_selector.setToolTip("Select Live Telemetry workspace preset.")
+        self.layout_save_button = QPushButton("Save Layout")
+        self.layout_save_button.setToolTip("Save current custom panel arrangement.")
+        self.layout_reset_button = QPushButton("Reset Layout")
+        self.layout_reset_button.setToolTip("Reset layout to default preset.")
         self.debug_toggle = QToolButton()
         self.debug_toggle.setText("Debug")
-        self.debug_toggle.setToolTip("Show or hide developer diagnostics")
+        self.debug_toggle.setToolTip(
+            live_telemetry_tooltip("debug_toggle", "Show or hide developer diagnostics.")
+        )
         self.debug_toggle.clicked.connect(self._toggle_debug_panel)
         self.debug_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self.debug_toggle.setStyleSheet(
@@ -689,6 +857,11 @@ class LiveDashboardWidget(QWidget):
         status_layout.addWidget(self.sample_rate_chip)
         status_layout.addWidget(self.session_chip)
         status_layout.addWidget(self.export_chip)
+        status_layout.addWidget(self.readiness_button)
+        status_layout.addWidget(QLabel("Layout:"))
+        status_layout.addWidget(self.layout_preset_selector)
+        status_layout.addWidget(self.layout_save_button)
+        status_layout.addWidget(self.layout_reset_button)
         status_layout.addStretch(1)
         status_layout.addWidget(self.debug_toggle)
 
@@ -783,6 +956,81 @@ class LiveDashboardWidget(QWidget):
         self.force_plot = self._make_plot("Force / Radius Timeline", minimum_height=240)
         self.signature_plot = self._make_plot("Signature Layer", minimum_height=240)
         self.groove_plot = self._make_plot("Groove View", minimum_height=240)
+        self.groove3d_frame = QFrame()
+        self.groove3d_frame.setMinimumHeight(220)
+        self.groove3d_frame.setStyleSheet(
+            """
+            QFrame {
+                background: rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 10px;
+            }
+            QLabel {
+                color: #f5f5f7;
+            }
+            """
+        )
+        groove3d_layout = QVBoxLayout(self.groove3d_frame)
+        groove3d_layout.setContentsMargins(10, 8, 10, 8)
+        groove3d_layout.setSpacing(6)
+
+        groove3d_header = QHBoxLayout()
+        groove3d_title = QLabel("Groove View 3D")
+        groove3d_title.setStyleSheet("font-weight: 600; font-size: 12px;")
+        self.groove3d_mode_selector = QComboBox()
+        self.groove3d_mode_selector.addItems(["Force", "Radius", "Layer Depth"])
+        self.groove3d_mode_selector.setToolTip(
+            live_telemetry_tooltip("groove3d_z_mode", "Choose Z mode.")
+        )
+        self.groove3d_mode_selector.setCurrentIndex(0)
+        self.groove3d_renderer_selector = QComboBox()
+        self.groove3d_renderer_selector.addItems(["Auto", "Metal", "OpenGL", "2D fallback"])
+        self.groove3d_renderer_selector.setToolTip(
+            live_telemetry_tooltip("groove3d_renderer_selector", "Select renderer backend.")
+        )
+        self.groove3d_reset_camera_button = QPushButton("Reset Camera")
+        self.groove3d_reset_camera_button.setToolTip(
+            live_telemetry_tooltip("groove3d_reset_camera", "Reset 3D camera.")
+        )
+        self.groove3d_auto_rotate_toggle = QToolButton()
+        self.groove3d_auto_rotate_toggle.setText("Auto Rotate")
+        self.groove3d_auto_rotate_toggle.setCheckable(True)
+        self.groove3d_auto_rotate_toggle.setToolTip(
+            live_telemetry_tooltip("groove3d_auto_rotate", "Auto rotate 3D view.")
+        )
+        self.groove3d_status_label = QLabel("Z mode: Force • Renderer: —")
+        self.groove3d_status_label.setStyleSheet("font-size: 11px; color: #c7c7cc;")
+        self.groove3d_renderer_reason_label = QLabel("")
+        self.groove3d_renderer_reason_label.setStyleSheet("font-size: 10px; color: #8e8e93;")
+        self.groove3d_renderer_reason_label.setWordWrap(True)
+
+        groove3d_header.addWidget(groove3d_title)
+        groove3d_header.addStretch(1)
+        groove3d_header.addWidget(self.groove3d_status_label)
+        groove3d_header.addWidget(self.groove3d_mode_selector)
+        groove3d_header.addWidget(self.groove3d_renderer_selector)
+        groove3d_header.addWidget(self.groove3d_reset_camera_button)
+        groove3d_header.addWidget(self.groove3d_auto_rotate_toggle)
+        groove3d_layout.addLayout(groove3d_header)
+        groove3d_layout.addWidget(self.groove3d_renderer_reason_label)
+
+        self.groove3d_container = QFrame()
+        groove3d_container_layout = QVBoxLayout(self.groove3d_container)
+        groove3d_container_layout.setContentsMargins(0, 0, 0, 0)
+        groove3d_container_layout.setSpacing(0)
+        self.groove3d_fallback_label = QLabel("3D Groove View unavailable on this system.")
+        self.groove3d_fallback_label.setWordWrap(True)
+        self.groove3d_fallback_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.groove3d_fallback_label.setStyleSheet("font-size: 11px; color: #c7c7cc;")
+        self.groove3d_fallback_label.setVisible(False)
+        self.groove3d_renderer: Groove3DRendererBase | None = None
+        self._setup_groove3d_renderer(groove3d_container_layout, "auto")
+        groove3d_layout.addWidget(self.groove3d_container, 1)
+
+        self.groove3d_mode_selector.currentTextChanged.connect(self._on_groove3d_mode_changed)
+        self.groove3d_renderer_selector.currentTextChanged.connect(self._on_groove3d_renderer_changed)
+        self.groove3d_reset_camera_button.clicked.connect(self._reset_groove3d_camera)
+        self.groove3d_auto_rotate_toggle.toggled.connect(self._on_groove3d_auto_rotate_toggled)
         self.phase_plot = self._make_plot("Phase Timeline", minimum_height=240)
 
         self.pressure_frame = QFrame()
@@ -892,6 +1140,9 @@ class LiveDashboardWidget(QWidget):
         hl_title = QLabel("Human-Likeness")
         hl_title.setStyleSheet("font-weight: 600; font-size: 12px;")
         self.human_likeness_details_button = QPushButton("Details")
+        self.human_likeness_details_button.setToolTip(
+            live_telemetry_tooltip("human_likeness_details", "Open Human-Likeness details.")
+        )
         self.human_likeness_details_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.human_likeness_details_button.clicked.connect(self._open_human_likeness_details)
         hl_header.addWidget(hl_title)
@@ -922,6 +1173,7 @@ class LiveDashboardWidget(QWidget):
             "force_radius": PanelSpec("high", 210, 170, False),
             "signature_layer": PanelSpec("medium", 200, 150, False),
             "groove_view": PanelSpec("medium", 200, 150, True),
+            "groove_view_3d": PanelSpec("medium", 210, 160, True),
             "phase_timeline": PanelSpec("low", 160, 100, True),
             "pin_keyboard_mirror": PanelSpec("high", 210, 170, False),
             "pressure_fingerprint": PanelSpec("medium", 190, 140, True),
@@ -933,6 +1185,7 @@ class LiveDashboardWidget(QWidget):
             "force_radius": "Force / Radius Timeline",
             "signature_layer": "Signature Layer",
             "groove_view": "Groove View",
+            "groove_view_3d": "Groove View 3D",
             "phase_timeline": "Phase Timeline",
             "pin_keyboard_mirror": "PIN Keyboard Mirror",
             "pressure_fingerprint": "Pressure Fingerprint",
@@ -944,6 +1197,7 @@ class LiveDashboardWidget(QWidget):
             "force_radius": self.force_plot,
             "signature_layer": self.signature_plot,
             "groove_view": self.groove_plot,
+            "groove_view_3d": self.groove3d_frame,
             "phase_timeline": self.phase_plot,
             "pin_keyboard_mirror": self.pin_mirror_frame,
             "pressure_fingerprint": self.pressure_frame,
@@ -960,6 +1214,11 @@ class LiveDashboardWidget(QWidget):
                 compact_min_height=spec.compact_height + 40,
                 collapsible=spec.collapsible,
             )
+        self._workspace = LiveWorkspaceLayoutManager(self._workspace_settings_path, list(self.panel_cards.keys()))
+        self.layout_preset_selector.setCurrentText(self._workspace.state.active_preset)
+        self.layout_preset_selector.currentTextChanged.connect(self._on_layout_preset_changed)
+        self.layout_save_button.clicked.connect(self._save_workspace_layout)
+        self.layout_reset_button.clicked.connect(self._reset_workspace_layout)
 
         self.panel_root = QFrame()
         self.panel_root.setStyleSheet("QFrame { background: transparent; border: none; }")
@@ -1014,6 +1273,7 @@ class LiveDashboardWidget(QWidget):
         debug_title = QLabel("Debug / Telemetry")
         debug_title.setStyleSheet("font-weight: 600; font-size: 13px;")
         self.debug_close_button = QPushButton("Close")
+        self.debug_close_button.setToolTip(live_telemetry_tooltip("debug_close", "Close debug panel."))
         self.debug_close_button.clicked.connect(self._toggle_debug_panel)
         debug_header.addWidget(debug_title)
         debug_header.addStretch(1)
@@ -1035,6 +1295,7 @@ class LiveDashboardWidget(QWidget):
         self.debug_ip_label = QLabel("Use this IP on iOS Logger: —")
         self.debug_ip_label.setWordWrap(True)
         self.debug_copy_ip_button = QPushButton("Copy IP")
+        self.debug_copy_ip_button.setToolTip(live_telemetry_tooltip("debug_copy_ip", "Copy detected Mac LAN IP."))
         self.debug_copy_ip_button.clicked.connect(self._copy_ip_to_clipboard)
         debug_ip_layout.addWidget(self.debug_ip_label, 1)
         debug_ip_layout.addWidget(self.debug_copy_ip_button)
@@ -1150,6 +1411,52 @@ class LiveDashboardWidget(QWidget):
         self.pin_feedback_label.setText(f"Action: {action}")
         self.pin_feedback_label.setStyleSheet(f"color: {color}; font-size: 11px;")
 
+    def _setup_groove3d_renderer(self, layout: QVBoxLayout, requested_mode: str) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+
+        selection = select_renderer(requested_mode)
+        self.groove3d_renderer = selection.renderer
+        layout.addWidget(selection.renderer.widget(), 1)
+        self.groove3d_renderer_reason_label.setText(selection.reason)
+        self.groove3d_status_label.setText(f"Z mode: {self._selected_groove3d_mode().title()} • Renderer: {selection.status}")
+        self.groove3d_reset_camera_button.setEnabled(True)
+        self.groove3d_auto_rotate_toggle.setEnabled(True)
+
+    def _on_groove3d_mode_changed(self, _text: str) -> None:
+        self._groove3d_last_update_monotonic = 0.0
+        if self.groove3d_renderer is not None:
+            renderer_name = getattr(self.groove3d_renderer, "name", "—")
+            self.groove3d_status_label.setText(f"Z mode: {self._selected_groove3d_mode().title()} • Renderer: {renderer_name}")
+
+    def _on_groove3d_renderer_changed(self, text: str) -> None:
+        requested = str(text or "Auto").strip().lower()
+        if requested == "2d fallback":
+            requested = "2d"
+        container_layout = self.groove3d_container.layout()
+        if isinstance(container_layout, QVBoxLayout):
+            self._setup_groove3d_renderer(container_layout, requested)
+        self._groove3d_last_update_monotonic = 0.0
+
+    def _on_groove3d_auto_rotate_toggled(self, enabled: bool) -> None:
+        if self.groove3d_renderer is not None:
+            self.groove3d_renderer.set_auto_rotate(bool(enabled))
+
+    def _selected_groove3d_mode(self) -> str:
+        label = self.groove3d_mode_selector.currentText().strip().lower()
+        if label.startswith("radius"):
+            return "radius"
+        if label.startswith("layer"):
+            return "layer"
+        return "force"
+
+    def _reset_groove3d_camera(self) -> None:
+        if self.groove3d_renderer is not None:
+            self.groove3d_renderer.reset_camera()
+
     def _make_plot(self, title: str, minimum_height: int = 240) -> pg.PlotWidget:
         plot = pg.PlotWidget()
         plot.setMinimumHeight(minimum_height)
@@ -1186,6 +1493,67 @@ class LiveDashboardWidget(QWidget):
     def layout_mode_override(self) -> str:
         return self._layout_mode_override
 
+    def _on_layout_preset_changed(self, preset_name: str) -> None:
+        if self._workspace is None:
+            return
+        self._workspace.apply_preset(preset_name)
+        self._workspace.save()
+        self._apply_live_layout()
+
+    def _save_workspace_layout(self) -> None:
+        if self._workspace is None:
+            return
+        self._workspace.save()
+        self.control_message_label.setText(f"Live workspace saved to {self._workspace_settings_path}")
+        self.control_message_label.setVisible(True)
+
+    def _reset_workspace_layout(self) -> None:
+        if self._workspace is None:
+            return
+        self._workspace.reset_default()
+        self._workspace.save()
+        self.layout_preset_selector.blockSignals(True)
+        self.layout_preset_selector.setCurrentText(self._workspace.state.active_preset)
+        self.layout_preset_selector.blockSignals(False)
+        self._apply_live_layout()
+
+    def move_panel(self, panel_id: str, direction: str) -> None:
+        if self._workspace is None:
+            return
+        self._workspace.move_panel(panel_id, direction)
+        self.layout_preset_selector.blockSignals(True)
+        self.layout_preset_selector.setCurrentText(self._workspace.state.active_preset)
+        self.layout_preset_selector.blockSignals(False)
+        self._workspace.save()
+        self._apply_live_layout()
+
+    def set_panel_collapsed(self, panel_id: str, collapsed: bool) -> None:
+        if self._workspace is None:
+            return
+        self._workspace.state.collapsed[panel_id] = bool(collapsed)
+        self._workspace.state.active_preset = "Custom"
+        self.layout_preset_selector.blockSignals(True)
+        self.layout_preset_selector.setCurrentText("Custom")
+        self.layout_preset_selector.blockSignals(False)
+        self._workspace.save()
+        self._apply_live_layout()
+
+    def adjust_panel_height(self, panel_id: str, delta: int) -> None:
+        if self._workspace is None:
+            return
+        spec = self._panel_specs.get(panel_id)
+        if spec is None:
+            return
+        base = int(self._workspace.state.panel_heights.get(panel_id, spec.minimum_height))
+        updated = max(80, min(640, base + int(delta)))
+        self._workspace.state.panel_heights[panel_id] = updated
+        self._workspace.state.active_preset = "Custom"
+        self.layout_preset_selector.blockSignals(True)
+        self.layout_preset_selector.setCurrentText("Custom")
+        self.layout_preset_selector.blockSignals(False)
+        self._workspace.save()
+        self._apply_live_layout()
+
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._update_responsive_mode()
@@ -1214,50 +1582,29 @@ class LiveDashboardWidget(QWidget):
         self._apply_panel_content_responsiveness()
 
     def _panel_positions_for_mode(self, mode: str) -> dict[str, tuple[int, int]]:
-        if mode == "large":
-            return {
-                "trajectory": (0, 0),
-                "force_radius": (0, 1),
-                "signature_layer": (0, 2),
-                "groove_view": (1, 0),
-                "pin_keyboard_mirror": (1, 1),
-                "pressure_fingerprint": (1, 2),
-                "groove_stability": (2, 0),
-                "human_likeness": (2, 1),
-                "phase_timeline": (2, 2),
-            }
-        if mode == "medium":
-            return {
-                "trajectory": (0, 0),
-                "force_radius": (0, 1),
-                "pin_keyboard_mirror": (1, 0),
-                "groove_stability": (1, 1),
-                "signature_layer": (2, 0),
-                "human_likeness": (2, 1),
-                "groove_view": (3, 0),
-                "pressure_fingerprint": (3, 1),
-                "phase_timeline": (4, 0),
-            }
-        return {
-            "trajectory": (0, 0),
-            "force_radius": (1, 0),
-            "pin_keyboard_mirror": (2, 0),
-            "groove_stability": (3, 0),
-            "signature_layer": (4, 0),
-            "human_likeness": (5, 0),
-            "groove_view": (6, 0),
-            "pressure_fingerprint": (7, 0),
-            "phase_timeline": (8, 0),
-        }
+        panel_order = (
+            self._workspace.state.panel_order
+            if self._workspace is not None and self._workspace.state.panel_order
+            else list(self.panel_cards.keys())
+        )
+        columns = 3 if mode == "large" else 2 if mode == "medium" else 1
+        positions: dict[str, tuple[int, int]] = {}
+        for index, panel_id in enumerate(panel_order):
+            positions[panel_id] = (index // columns, index % columns)
+        for panel_id in self.panel_cards:
+            if panel_id not in positions:
+                index = len(positions)
+                positions[panel_id] = (index // columns, index % columns)
+        return positions
 
     def _collapsed_panels_for_mode(self, mode: str) -> set[str]:
         collapsed: set[str] = set()
         if mode == "small":
             collapsed.update({"phase_timeline"})
             if self._compact_height_mode:
-                collapsed.update({"pressure_fingerprint", "groove_view"})
+                collapsed.update({"pressure_fingerprint", "groove_view", "groove_view_3d"})
         elif mode == "medium" and self._compact_height_mode:
-            collapsed.update({"phase_timeline"})
+            collapsed.update({"phase_timeline", "groove_view_3d"})
         return collapsed
 
     def _clear_layout(self, layout: QGridLayout | QHBoxLayout | QVBoxLayout) -> None:
@@ -1275,10 +1622,14 @@ class LiveDashboardWidget(QWidget):
         for panel_id, card in self.panel_cards.items():
             spec = self._panel_specs[panel_id]
             target_min_height = spec.compact_height if compact_mode else spec.minimum_height
+            if self._workspace is not None:
+                target_min_height = int(self._workspace.state.panel_heights.get(panel_id, target_min_height))
             card.content_widget.setMinimumHeight(max(80, target_min_height))
             card.set_compact_mode(compact_mode)
             card._apply_state(card is focused_panel)
-            card.set_collapsed(panel_id in collapsed_panels and card is not focused_panel)
+            custom_collapsed = bool(self._workspace.state.collapsed.get(panel_id, False)) if self._workspace is not None else False
+            card.setVisible(True if self._workspace is None else bool(self._workspace.state.visible_panels.get(panel_id, True)))
+            card.set_collapsed((panel_id in collapsed_panels or custom_collapsed) and card is not focused_panel)
 
         self._clear_layout(self.focus_area_layout)
         self._clear_layout(self.overview_grid)
@@ -1397,6 +1748,8 @@ class LiveDashboardWidget(QWidget):
             self._apply_plot_responsiveness(context)
         if panel_id == "pin_keyboard_mirror":
             self._apply_pin_panel_responsiveness(context)
+        elif panel_id == "groove_view_3d":
+            self._apply_groove3d_panel_responsiveness(context)
         elif panel_id == "pressure_fingerprint":
             self._apply_pressure_panel_responsiveness(context)
         elif panel_id == "groove_stability":
@@ -1459,6 +1812,32 @@ class LiveDashboardWidget(QWidget):
             self.pressure_summary_label.setVisible(True)
             self.pressure_detail_label.setVisible(True)
             self.pressure_hist_plot.setMinimumHeight(120)
+
+    def _apply_groove3d_panel_responsiveness(self, context: PanelRenderContext) -> None:
+        if context.panel_mode == "mini":
+            self.groove3d_status_label.setVisible(False)
+            self.groove3d_mode_selector.setVisible(False)
+            self.groove3d_renderer_selector.setVisible(False)
+            self.groove3d_reset_camera_button.setVisible(False)
+            self.groove3d_auto_rotate_toggle.setVisible(False)
+            self.groove3d_renderer_reason_label.setVisible(False)
+            self.groove3d_container.setMinimumHeight(100)
+        elif context.panel_mode == "compact":
+            self.groove3d_status_label.setVisible(True)
+            self.groove3d_mode_selector.setVisible(True)
+            self.groove3d_renderer_selector.setVisible(True)
+            self.groove3d_reset_camera_button.setVisible(False)
+            self.groove3d_auto_rotate_toggle.setVisible(False)
+            self.groove3d_renderer_reason_label.setVisible(False)
+            self.groove3d_container.setMinimumHeight(140)
+        else:
+            self.groove3d_status_label.setVisible(True)
+            self.groove3d_mode_selector.setVisible(True)
+            self.groove3d_renderer_selector.setVisible(True)
+            self.groove3d_reset_camera_button.setVisible(True)
+            self.groove3d_auto_rotate_toggle.setVisible(True)
+            self.groove3d_renderer_reason_label.setVisible(True)
+            self.groove3d_container.setMinimumHeight(170)
 
     def _apply_groove_stability_panel_responsiveness(self, context: PanelRenderContext) -> None:
         if context.panel_mode == "mini":
@@ -1534,6 +1913,74 @@ class LiveDashboardWidget(QWidget):
 
         self._panel_help_dialog = dialog
         dialog.exec()
+
+    def _open_readiness_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("System Readiness Check")
+        dialog.resize(760, 520)
+        dialog.setModal(False)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        title = QLabel("Run this checklist before collecting real research data.")
+        title.setStyleSheet("font-size: 13px; font-weight: 600; color: #f5f5f7;")
+        layout.addWidget(title)
+
+        self.readiness_summary_label = QLabel("Not run yet.")
+        self.readiness_summary_label.setStyleSheet("font-size: 12px; color: #c7c7cc;")
+        layout.addWidget(self.readiness_summary_label)
+
+        self.readiness_results_box = QPlainTextEdit()
+        self.readiness_results_box.setReadOnly(True)
+        self.readiness_results_box.setStyleSheet(
+            """
+            QPlainTextEdit {
+                background: #0f1014;
+                color: #f5f5f7;
+                border: 1px solid rgba(255, 255, 255, 0.10);
+                border-radius: 8px;
+                font-family: Menlo, Monaco, monospace;
+                font-size: 11px;
+            }
+            """
+        )
+        layout.addWidget(self.readiness_results_box, 1)
+
+        button_row = QHBoxLayout()
+        run_button = QPushButton("Run Readiness Test")
+        run_button.clicked.connect(self._run_readiness_test)
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(dialog.close)
+        button_row.addWidget(run_button)
+        button_row.addStretch(1)
+        button_row.addWidget(close_button)
+        layout.addLayout(button_row)
+
+        self._readiness_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _run_readiness_test(self) -> None:
+        snapshot = self.live_server.snapshot()
+        report = run_system_readiness_check(self.paths, snapshot)
+        self._render_readiness_report(report)
+
+    def _render_readiness_report(self, report: ReadinessReport) -> None:
+        status = "PASS" if report.overall_passed else "FAIL"
+        self.readiness_summary_label.setText(
+            f"Readiness: {status}  •  Session: {report.active_session_id or '—'}  •  Generated: {report.generated_at}"
+        )
+        lines = []
+        for row in report.checks:
+            badge = "PASS" if row.passed else "FAIL"
+            lines.append(f"[{badge}] {row.label}")
+            lines.append(f"  {row.detail}")
+        lines.append("")
+        lines.append(f"JSON: {report.report_json_path}")
+        lines.append(f"Markdown: {report.report_md_path}")
+        self.readiness_results_box.setPlainText("\n".join(lines))
 
     def refresh(self) -> None:
         snapshot = self.live_server.snapshot()
@@ -1638,10 +2085,12 @@ class LiveDashboardWidget(QWidget):
         self._render_signature_layer(forces, radii, phases)
         self._render_groove_view(xs, ys, forces, radii, times, phases)
         self._render_phase_timeline(times, phases, events)
+        self._update_groove3d(events)
 
     def _clear_plots(self) -> None:
         for plot in [self.trajectory_plot, self.force_plot, self.signature_plot, self.groove_plot, self.phase_plot, self.pressure_hist_plot]:
             plot.clear()
+        self._update_groove3d([])
 
     def _render_trajectory(self, xs: np.ndarray, ys: np.ndarray) -> None:
         plot = self.trajectory_plot
@@ -1744,6 +2193,36 @@ class LiveDashboardWidget(QWidget):
         plot.setLabel("bottom", "Timestamp")
         plot.hideAxis("left")
         plot.getAxis("bottom").setStyle(tickTextOffset=4)
+
+    def _update_groove3d(self, events: list[dict[str, Any]]) -> None:
+        if self.groove3d_renderer is None:
+            return
+
+        if not events:
+            self.groove3d_renderer.clear()
+            self.groove3d_status_label.setText("Z mode: —")
+            return
+
+        now = time.monotonic()
+        if (now - self._groove3d_last_update_monotonic) < self._groove3d_update_interval_s:
+            return
+        self._groove3d_last_update_monotonic = now
+
+        trace = build_groove3d_trace(
+            events,
+            z_mode=self._selected_groove3d_mode(),
+            max_points=self._groove3d_max_points,
+        )
+        if trace.source_count == 0:
+            self.groove3d_renderer.clear()
+            self.groove3d_status_label.setText("Z mode: —")
+            return
+
+        self.groove3d_renderer.render_trace(trace)
+        renderer_name = getattr(self.groove3d_renderer, "name", "—")
+        self.groove3d_status_label.setText(
+            f"Z mode: {trace.z_mode_used.title()} • Renderer: {renderer_name} • points: {trace.source_count}"
+        )
 
     def _update_pin_rhythm_panel(self, snapshot: TelemetrySnapshot) -> None:
         active_session = next((session for session in snapshot.sessions if session.get("sessionId") == snapshot.active_session_id), None)
@@ -2060,3 +2539,4 @@ def _phase_to_numeric(phase: str) -> float:
         "cancelled": 3.0,
     }
     return mapping.get(phase, -1.0)
+    QMenu,

@@ -45,6 +45,14 @@ PANEL_HELP: dict[str, dict[str, Any]] = {
         "interpretation_notes": "Stable groove shapes suggest consistent behavior; irregular spread may indicate adaptation or noise.",
         "optional_tips": "Use with Groove Stability for short-term consistency interpretation.",
     },
+    "groove_view_3d": {
+        "title": "Groove View 3D",
+        "short_description": "Renders live touch groove as a 3D trace where Z encodes force or pressure proxy.",
+        "why_it_matters": "3D representation helps inspect micro-dynamic layering not obvious in 2D trajectory plots.",
+        "calculation_summary": "Maps normalized X/Y touch positions and Z from selected mode (force, radius, or layer depth) over recent events.",
+        "interpretation_notes": "Higher Z indicates stronger pressure/proxy intensity; use shape consistency across trials for research comparison.",
+        "optional_tips": "Visualization only; do not interpret it as identity proof or authentication signal by itself. Optional Metal deps: pyobjc-framework-Metal, pyobjc-framework-MetalKit.",
+    },
     "phase_timeline": {
         "title": "Phase Timeline",
         "short_description": "Shows touch phase progression (began/moved/ended/cancelled) over time.",
@@ -115,11 +123,121 @@ LIVE_PANEL_HELP_KEY_MAP: dict[str, str] = {
     "force_radius": "force_radius_timeline",
     "signature_layer": "signature_layer",
     "groove_view": "groove_view",
+    "groove_view_3d": "groove_view_3d",
     "phase_timeline": "phase_timeline",
     "pin_keyboard_mirror": "pin_keyboard_mirror",
     "pressure_fingerprint": "pressure_fingerprint",
     "groove_stability": "groove_stability",
     "human_likeness": "human_likeness",
+}
+
+PANEL_TOOLTIPS: dict[str, str] = {
+    "touch_trajectory": "Displays raw touch path in x/y over time for movement consistency analysis.",
+    "force_radius_timeline": "Shows force and contact radius over time to inspect press and release behavior.",
+    "signature_layer": "Overlays phase, force, and radius cues into a compact behavioral signature view.",
+    "groove_view": "Radial groove-like map showing temporal-spatial occupancy and pattern regularity.",
+    "groove_view_3d": "3D live groove trace where Z maps force, radius proxy, or layer depth from recent touch events.",
+    "phase_timeline": "Timeline of began/moved/ended/cancelled states for capture sanity and transitions.",
+    "pin_keyboard_mirror": "Read-only mirror of PIN digit activity streamed from the iOS logger.",
+    "pin_rhythm_strip": "Inter-digit timing strip for PIN rhythm consistency and variance tracking.",
+    "pressure_fingerprint": "Force distribution summary with radius stability indicators for pressure behavior.",
+    "groove_stability": "Rolling stability score across trajectory, force, timing, and layer occupancy.",
+    "human_likeness": "Research score estimating how natural the current touch behavior appears. Not authentication or proof of human presence.",
+    "live_stability": "Live micro-metrics for drift, jitter, force/radius stability, and sample-rate health.",
+    "signal_quality": "Capture quality indicator showing whether data density and timing support valid interpretation.",
+}
+
+LIVE_TELEMETRY_TOOLTIPS: dict[str, str] = {
+    "debug_toggle": "Open or hide developer diagnostics for network and telemetry internals.",
+    "panel_help": "Open panel research explanation with interpretation guidance.",
+    "panel_double_click_focus": "Double-click to open this panel in a larger live focus view.",
+    "panel_collapse": "Collapse or expand this panel body in compact layouts.",
+    "human_likeness_details": "Open Human-Likeness details, calibration, and validation actions.",
+    "human_likeness_research_help": "Open the Human-Likeness Research Guide.",
+    "evaluate_current_session": "Evaluate only the currently buffered live session events.",
+    "run_calibration": "Run synthetic calibration scenarios for Human-Likeness score behavior.",
+    "preview_calibration_pdf": "Open the latest calibration PDF report if available.",
+    "run_human_vs_synthetic_validation": "Compare dataset human sessions against synthetic reference scenarios.",
+    "groove3d_z_mode": "Choose what Z represents in Groove View 3D: force, radius proxy, or layer depth.",
+    "groove3d_reset_camera": "Reset Groove View 3D camera position and angle.",
+    "groove3d_auto_rotate": "Rotate Groove View 3D camera slowly for spatial inspection.",
+    "groove3d_renderer_selector": "Choose rendering backend preference: Auto, Metal, OpenGL, or 2D fallback.",
+    "close_dialog": "Close this dialog window.",
+    "debug_close": "Close the debug diagnostics panel.",
+    "debug_copy_ip": "Copy detected Mac LAN IP for iOS logger telemetry host setting.",
+    "status_connection": "Current live telemetry connection state from analyzer server.",
+    "status_device": "Active source device reported by current live session.",
+    "status_input": "Current detected input mode: Finger, Pencil, Mixed, or Unknown.",
+    "status_sample_rate": "Estimated incoming event sample rate in Hertz.",
+    "status_session": "Current active live session identifier.",
+    "status_export": "Export verification state for the active live session.",
+}
+
+
+HUMAN_LIKENESS_RESEARCH_GUIDE: dict[str, dict[str, Any]] = {
+    "en": {
+        "title": "Human-Likeness Research Guide",
+        "subtitle": "Interpretation aid for behavioral signal research",
+        "sections": [
+            {
+                "heading": "What is Human-Likeness?",
+                "body": "Human-Likeness is a research score that estimates how natural the current touch behavior appears based on interpretable signal dynamics.",
+            },
+            {
+                "heading": "Why does it matter?",
+                "body": "Human motor input typically contains non-perfect micro-variation. This score helps flag whether captured behavior is rich enough for touchprint research.",
+            },
+            {
+                "heading": "Timing Naturalness",
+                "body": "Measures inter-event and inter-digit timing variation. Suspiciously perfect intervals reduce this subscore.",
+            },
+            {
+                "heading": "Jitter Naturalness",
+                "body": "Measures small spatial micro-variation in x/y dynamics. Completely static or overly linear movement lowers this component.",
+            },
+            {
+                "heading": "Pressure Naturalness",
+                "body": "Measures force and contact-radius variation. Flat pressure/radius patterns are less human-like than naturally varying profiles.",
+            },
+            {
+                "heading": "Release Dynamics",
+                "body": "Measures press-release shape consistency, including ramp-up and decay behavior around touch end.",
+            },
+            {
+                "heading": "Repetition Diversity",
+                "body": "Compares repeated attempts. Human attempts are usually similar but not identical; near-identical repeats are suspicious.",
+            },
+            {
+                "heading": "Signal Quality",
+                "body": "Measures whether the current data window is sufficient and stable enough for reliable scoring.",
+            },
+            {
+                "heading": "Automation Suspicion",
+                "body": "Inverse perspective of Human-Likeness. Higher suspicion indicates stronger signs of over-regular or synthetic-like patterns.",
+            },
+            {
+                "heading": "Confidence",
+                "body": "Confidence reflects data sufficiency and signal robustness. Low confidence means the score should be treated as provisional.",
+            },
+            {
+                "heading": "Interpretation Guide",
+                "body": (
+                    "0–30: Highly regular or poor-quality signal; strong caution.\n"
+                    "31–50: Likely irregularity/suspicion or insufficient natural variation.\n"
+                    "51–70: Mixed signal; partially natural but inconclusive.\n"
+                    "71–85: Generally natural behavioral variation.\n"
+                    "86–100: Strong naturalness signature in current window."
+                ),
+            },
+            {
+                "heading": "Research Warning",
+                "body": (
+                    "Human-Likeness is not authentication, not identity verification, "
+                    "and not proof of human presence. It is a research metric only."
+                ),
+            },
+        ],
+    }
 }
 
 
@@ -135,3 +253,21 @@ def panel_help_for_live_panel(panel_id: str) -> dict[str, Any]:
             "interpretation_notes": "N/A",
         }
     return payload
+
+
+def panel_tooltip_for_live_panel(panel_id: str) -> str:
+    help_id = LIVE_PANEL_HELP_KEY_MAP.get(panel_id, panel_id)
+    return PANEL_TOOLTIPS.get(help_id, "Live telemetry panel.")
+
+
+def live_telemetry_tooltip(key: str, default: str = "") -> str:
+    if key in LIVE_TELEMETRY_TOOLTIPS:
+        return LIVE_TELEMETRY_TOOLTIPS[key]
+    return default
+
+
+def human_likeness_research_guide(locale: str = "en") -> dict[str, Any]:
+    normalized = str(locale or "en").strip().lower()
+    if normalized in HUMAN_LIKENESS_RESEARCH_GUIDE:
+        return HUMAN_LIKENESS_RESEARCH_GUIDE[normalized]
+    return HUMAN_LIKENESS_RESEARCH_GUIDE["en"]
