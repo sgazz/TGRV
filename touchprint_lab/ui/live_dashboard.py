@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QToolButton,
     QVBoxLayout,
@@ -49,6 +50,23 @@ class LiveLayoutState:
     panel_id: str | None = None
 
 
+@dataclass(slots=True)
+class PanelSpec:
+    priority: str
+    minimum_height: int
+    compact_height: int
+    collapsible: bool = False
+
+
+@dataclass(slots=True)
+class PanelRenderContext:
+    width: int
+    height: int
+    layout_mode: str
+    compact_height: bool
+    panel_mode: str
+
+
 class LivePanelCard(QFrame):
     def __init__(
         self,
@@ -58,6 +76,7 @@ class LivePanelCard(QFrame):
         content_widget: QWidget,
         *,
         compact_min_height: int = 180,
+        collapsible: bool = False,
     ) -> None:
         super().__init__()
         self.dashboard = dashboard
@@ -65,6 +84,8 @@ class LivePanelCard(QFrame):
         self.title = title
         self.content_widget = content_widget
         self.compact_min_height = compact_min_height
+        self.collapsible = collapsible
+        self.collapsed = False
         self._focused = False
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setStyleSheet(
@@ -124,8 +145,14 @@ class LivePanelCard(QFrame):
         self.restore_button.clicked.connect(self.dashboard.restore_live_layout)
         self.restore_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.restore_button.setVisible(False)
+        self.collapse_button = QToolButton()
+        self.collapse_button.setText("Collapse")
+        self.collapse_button.setToolTip("Collapse or expand panel body")
+        self.collapse_button.clicked.connect(self._toggle_collapsed)
+        self.collapse_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.collapse_button.setVisible(self.collapsible)
 
-        header_buttons = [self.zoom_quarter_button, self.zoom_half_button, self.restore_button]
+        header_buttons = [self.zoom_quarter_button, self.zoom_half_button, self.restore_button, self.collapse_button]
         for button in header_buttons:
             button.setStyleSheet(
                 """
@@ -164,6 +191,8 @@ class LivePanelCard(QFrame):
     def set_compact_mode(self, enabled: bool) -> None:
         minimum_height = max(120, self.compact_min_height - 30) if enabled else self.compact_min_height
         self.content_widget.setMinimumHeight(minimum_height)
+        if self.collapsed:
+            self.content_widget.setMinimumHeight(0)
 
     def _apply_state(self, focused: bool, mode: str) -> None:
         self._focused = focused
@@ -173,6 +202,7 @@ class LivePanelCard(QFrame):
             self.zoom_quarter_button.setVisible(False)
             self.zoom_half_button.setVisible(False)
             self.restore_button.setVisible(True)
+            self.collapse_button.setVisible(False)
             self.header.setStyleSheet(
                 """
                 QFrame {
@@ -191,6 +221,7 @@ class LivePanelCard(QFrame):
             self.zoom_quarter_button.setVisible(True)
             self.zoom_half_button.setVisible(True)
             self.restore_button.setVisible(False)
+            self.collapse_button.setVisible(self.collapsible)
             self.header.setStyleSheet(
                 """
                 QFrame {
@@ -203,6 +234,35 @@ class LivePanelCard(QFrame):
                 }
                 """
             )
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        if not self.collapsible:
+            self.collapsed = False
+            self.body.setVisible(True)
+            return
+        self.collapsed = collapsed
+        self.body.setVisible(not collapsed)
+        self.collapse_button.setText("Expand" if collapsed else "Collapse")
+
+    def _toggle_collapsed(self) -> None:
+        self.set_collapsed(not self.collapsed)
+
+    def render_context(self, layout_mode: str, compact_height: bool) -> PanelRenderContext:
+        width = max(self.width(), self.content_widget.width(), 1)
+        height = max(self.height(), self.content_widget.height(), 1)
+        if compact_height or height < 150:
+            panel_mode = "mini"
+        elif layout_mode == "small" or width < 360:
+            panel_mode = "compact"
+        else:
+            panel_mode = "normal"
+        return PanelRenderContext(
+            width=width,
+            height=height,
+            layout_mode=layout_mode,
+            compact_height=compact_height,
+            panel_mode=panel_mode,
+        )
 
 
 class HumanLikenessDetailsDialog(QDialog):
@@ -552,6 +612,10 @@ class LiveDashboardWidget(QWidget):
         self._pin_highlight_token = 0
         self._live_layout_state = LiveLayoutState()
         self._panel_cards: dict[str, LivePanelCard] = {}
+        self._panel_specs: dict[str, PanelSpec] = {}
+        self._layout_mode_override: str = "auto"
+        self._responsive_mode: str = "large"
+        self._compact_height_mode: bool = False
         self._latest_human_likeness_metrics: HumanLikenessMetrics | None = None
         self._human_likeness_dialog: HumanLikenessDetailsDialog | None = None
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -648,7 +712,7 @@ class LiveDashboardWidget(QWidget):
 
         self.pin_mirror_frame = self.pin_rhythm_frame = QFrame()
         self.pin_mirror_frame.setObjectName("LivePinRhythm")
-        self.pin_mirror_frame.setMinimumHeight(260)
+        self.pin_mirror_frame.setMinimumHeight(200)
         self.pin_mirror_frame.setStyleSheet(
             """
             #LivePinRhythm {
@@ -706,7 +770,7 @@ class LiveDashboardWidget(QWidget):
             for column_index, value in enumerate(row):
                 if value is None:
                     spacer = QLabel("")
-                    spacer.setFixedSize(28, 24)
+                    spacer.setMinimumSize(16, 16)
                     grid.addWidget(spacer, row_index, column_index)
                     continue
                 cell = self._make_pin_cell(value)
@@ -721,7 +785,7 @@ class LiveDashboardWidget(QWidget):
         self.phase_plot = self._make_plot("Phase Timeline", minimum_height=240)
 
         self.pressure_frame = QFrame()
-        self.pressure_frame.setMinimumHeight(260)
+        self.pressure_frame.setMinimumHeight(190)
         self.pressure_frame.setStyleSheet(
             """
             QFrame {
@@ -752,7 +816,7 @@ class LiveDashboardWidget(QWidget):
         pressure_layout.addWidget(self.pressure_detail_label)
 
         self.groove_stability_frame = QFrame()
-        self.groove_stability_frame.setMinimumHeight(260)
+        self.groove_stability_frame.setMinimumHeight(190)
         self.groove_stability_frame.setStyleSheet(
             """
             QFrame {
@@ -806,7 +870,7 @@ class LiveDashboardWidget(QWidget):
         groove_layout.addWidget(self.groove_stability_status_label)
 
         self.human_likeness_frame = QFrame()
-        self.human_likeness_frame.setMinimumHeight(260)
+        self.human_likeness_frame.setMinimumHeight(190)
         self.human_likeness_frame.setStyleSheet(
             """
             QFrame {
@@ -852,17 +916,49 @@ class LiveDashboardWidget(QWidget):
         self.human_likeness_disclaimer.setStyleSheet("font-size: 10px; color: #8e8e93;")
         hl_layout.addWidget(self.human_likeness_disclaimer)
 
-        self.panel_cards = {
-            "trajectory": LivePanelCard(self, "trajectory", "Touch Trajectory", self.trajectory_plot, compact_min_height=220),
-            "force_radius": LivePanelCard(self, "force_radius", "Force / Radius Timeline", self.force_plot, compact_min_height=220),
-            "signature_layer": LivePanelCard(self, "signature_layer", "Signature Layer", self.signature_plot, compact_min_height=220),
-            "groove_view": LivePanelCard(self, "groove_view", "Groove View", self.groove_plot, compact_min_height=220),
-            "phase_timeline": LivePanelCard(self, "phase_timeline", "Phase Timeline", self.phase_plot, compact_min_height=220),
-            "pin_keyboard_mirror": LivePanelCard(self, "pin_keyboard_mirror", "PIN Keyboard Mirror", self.pin_mirror_frame, compact_min_height=220),
-            "pressure_fingerprint": LivePanelCard(self, "pressure_fingerprint", "Pressure Fingerprint", self.pressure_frame, compact_min_height=220),
-            "groove_stability": LivePanelCard(self, "groove_stability", "Groove Stability", self.groove_stability_frame, compact_min_height=220),
-            "human_likeness": LivePanelCard(self, "human_likeness", "Human-Likeness", self.human_likeness_frame, compact_min_height=220),
+        self._panel_specs = {
+            "trajectory": PanelSpec("high", 210, 170, False),
+            "force_radius": PanelSpec("high", 210, 170, False),
+            "signature_layer": PanelSpec("medium", 200, 150, False),
+            "groove_view": PanelSpec("medium", 200, 150, True),
+            "phase_timeline": PanelSpec("low", 160, 100, True),
+            "pin_keyboard_mirror": PanelSpec("high", 210, 170, False),
+            "pressure_fingerprint": PanelSpec("medium", 190, 140, True),
+            "groove_stability": PanelSpec("high", 190, 150, False),
+            "human_likeness": PanelSpec("high", 190, 150, False),
         }
+        panel_titles = {
+            "trajectory": "Touch Trajectory",
+            "force_radius": "Force / Radius Timeline",
+            "signature_layer": "Signature Layer",
+            "groove_view": "Groove View",
+            "phase_timeline": "Phase Timeline",
+            "pin_keyboard_mirror": "PIN Keyboard Mirror",
+            "pressure_fingerprint": "Pressure Fingerprint",
+            "groove_stability": "Groove Stability",
+            "human_likeness": "Human-Likeness",
+        }
+        panel_widgets = {
+            "trajectory": self.trajectory_plot,
+            "force_radius": self.force_plot,
+            "signature_layer": self.signature_plot,
+            "groove_view": self.groove_plot,
+            "phase_timeline": self.phase_plot,
+            "pin_keyboard_mirror": self.pin_mirror_frame,
+            "pressure_fingerprint": self.pressure_frame,
+            "groove_stability": self.groove_stability_frame,
+            "human_likeness": self.human_likeness_frame,
+        }
+        self.panel_cards = {}
+        for panel_id, spec in self._panel_specs.items():
+            self.panel_cards[panel_id] = LivePanelCard(
+                self,
+                panel_id,
+                panel_titles[panel_id],
+                panel_widgets[panel_id],
+                compact_min_height=spec.compact_height + 40,
+                collapsible=spec.collapsible,
+            )
 
         self.panel_root = QFrame()
         self.panel_root.setStyleSheet("QFrame { background: transparent; border: none; }")
@@ -885,7 +981,12 @@ class LiveDashboardWidget(QWidget):
 
         self.panel_root_layout.addWidget(self.focus_area)
         self.panel_root_layout.addWidget(self.overview_area, 1)
-        root_layout.addWidget(self.panel_root, 1)
+        self.panel_scroll = QScrollArea()
+        self.panel_scroll.setWidgetResizable(True)
+        self.panel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.panel_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.panel_scroll.setWidget(self.panel_root)
+        root_layout.addWidget(self.panel_scroll, 1)
 
         self._install_live_shortcuts()
         self._apply_live_layout()
@@ -940,7 +1041,7 @@ class LiveDashboardWidget(QWidget):
 
         self.debug_status_box = QPlainTextEdit()
         self.debug_status_box.setReadOnly(True)
-        self.debug_status_box.setMinimumHeight(160)
+        self.debug_status_box.setMinimumHeight(120)
         self.debug_status_box.setStyleSheet(
             """
             QPlainTextEdit {
@@ -955,6 +1056,7 @@ class LiveDashboardWidget(QWidget):
         )
         debug_layout.addWidget(self.debug_status_box)
         root_layout.addWidget(self.debug_panel)
+        self._update_responsive_mode(force=True)
 
     def _make_chip(self, text: str) -> QLabel:
         chip = QLabel(text)
@@ -992,7 +1094,8 @@ class LiveDashboardWidget(QWidget):
     def _make_pin_cell(self, text: str) -> QLabel:
         cell = QLabel(text)
         cell.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        cell.setFixedSize(36, 32)
+        cell.setMinimumSize(30, 28)
+        cell.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         cell.setStyleSheet(
             """
             QLabel {
@@ -1096,6 +1199,90 @@ class LiveDashboardWidget(QWidget):
         self._live_layout_state = LiveLayoutState()
         self._apply_live_layout()
 
+    def set_layout_mode_override(self, mode: str) -> None:
+        normalized = str(mode or "auto").strip().lower()
+        if normalized not in {"auto", "large", "medium", "small"}:
+            normalized = "auto"
+        self._layout_mode_override = normalized
+        self._update_responsive_mode(force=True)
+
+    def layout_mode_override(self) -> str:
+        return self._layout_mode_override
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._update_responsive_mode()
+        self._apply_panel_content_responsiveness()
+
+    def _resolve_responsive_mode(self) -> tuple[str, bool]:
+        width = max(self.width(), 1)
+        height = max(self.height(), 1)
+        if self._layout_mode_override != "auto":
+            mode = self._layout_mode_override
+        elif width >= 1400:
+            mode = "large"
+        elif width >= 1000:
+            mode = "medium"
+        else:
+            mode = "small"
+        return mode, height < 760
+
+    def _update_responsive_mode(self, force: bool = False) -> None:
+        mode, compact_height = self._resolve_responsive_mode()
+        if not force and mode == self._responsive_mode and compact_height == self._compact_height_mode:
+            return
+        self._responsive_mode = mode
+        self._compact_height_mode = compact_height
+        self._apply_live_layout()
+        self._apply_panel_content_responsiveness()
+
+    def _panel_positions_for_mode(self, mode: str) -> dict[str, tuple[int, int]]:
+        if mode == "large":
+            return {
+                "trajectory": (0, 0),
+                "force_radius": (0, 1),
+                "signature_layer": (0, 2),
+                "groove_view": (1, 0),
+                "pin_keyboard_mirror": (1, 1),
+                "pressure_fingerprint": (1, 2),
+                "groove_stability": (2, 0),
+                "human_likeness": (2, 1),
+                "phase_timeline": (2, 2),
+            }
+        if mode == "medium":
+            return {
+                "trajectory": (0, 0),
+                "force_radius": (0, 1),
+                "pin_keyboard_mirror": (1, 0),
+                "groove_stability": (1, 1),
+                "signature_layer": (2, 0),
+                "human_likeness": (2, 1),
+                "groove_view": (3, 0),
+                "pressure_fingerprint": (3, 1),
+                "phase_timeline": (4, 0),
+            }
+        return {
+            "trajectory": (0, 0),
+            "force_radius": (1, 0),
+            "pin_keyboard_mirror": (2, 0),
+            "groove_stability": (3, 0),
+            "signature_layer": (4, 0),
+            "human_likeness": (5, 0),
+            "groove_view": (6, 0),
+            "pressure_fingerprint": (7, 0),
+            "phase_timeline": (8, 0),
+        }
+
+    def _collapsed_panels_for_mode(self, mode: str) -> set[str]:
+        collapsed: set[str] = set()
+        if mode == "small":
+            collapsed.update({"phase_timeline"})
+            if self._compact_height_mode:
+                collapsed.update({"pressure_fingerprint", "groove_view"})
+        elif mode == "medium" and self._compact_height_mode:
+            collapsed.update({"phase_timeline"})
+        return collapsed
+
     def _clear_layout(self, layout: QGridLayout | QHBoxLayout | QVBoxLayout) -> None:
         while layout.count():
             item = layout.takeAt(0)
@@ -1106,27 +1293,27 @@ class LiveDashboardWidget(QWidget):
     def _apply_live_layout(self) -> None:
         state = self._live_layout_state
         focused_panel = self.panel_cards.get(state.panel_id) if state.panel_id else None
-
-        for card in self.panel_cards.values():
-            card.set_compact_mode(state.mode != "default")
+        mode = self._responsive_mode
+        compact_mode = state.mode != "default" or mode != "large" or self._compact_height_mode
+        collapsed_panels = self._collapsed_panels_for_mode(mode)
+        for panel_id, card in self.panel_cards.items():
+            spec = self._panel_specs[panel_id]
+            target_min_height = spec.compact_height if compact_mode else spec.minimum_height
+            card.content_widget.setMinimumHeight(max(80, target_min_height))
+            card.set_compact_mode(compact_mode)
             card._apply_state(card is focused_panel, state.mode)
+            card.set_collapsed(panel_id in collapsed_panels and card is not focused_panel)
 
         self._clear_layout(self.focus_area_layout)
         self._clear_layout(self.overview_grid)
 
-        default_positions = {
-            "trajectory": (0, 0),
-            "force_radius": (0, 1),
-            "signature_layer": (0, 2),
-            "groove_view": (1, 0),
-            "pin_keyboard_mirror": (1, 1),
-            "pressure_fingerprint": (1, 2),
-            "groove_stability": (2, 0),
-            "human_likeness": (2, 1),
-            "phase_timeline": (2, 2),
-        }
+        default_positions = self._panel_positions_for_mode(mode)
         max_row = max(position[0] for position in default_positions.values())
         max_column = max(position[1] for position in default_positions.values())
+        if mode == "small":
+            self.panel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        else:
+            self.panel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         if focused_panel is None or state.mode == "default":
             self.focus_area.setVisible(False)
@@ -1142,6 +1329,8 @@ class LiveDashboardWidget(QWidget):
             return
 
         self.focus_area.setVisible(True)
+        if focused_panel.collapsible and focused_panel.collapsed:
+            focused_panel.set_collapsed(False)
         self.focus_area_layout.addWidget(focused_panel)
         focus_stretch = 1 if state.mode == "quarter" else 2
         overview_stretch = 3 if state.mode == "quarter" else 2
@@ -1157,6 +1346,121 @@ class LiveDashboardWidget(QWidget):
             self.overview_grid.setColumnStretch(column, 1)
         for row in range(max_row + 1):
             self.overview_grid.setRowStretch(row, 1)
+        self._apply_panel_content_responsiveness()
+
+    def _apply_panel_content_responsiveness(self) -> None:
+        for panel_id, card in self.panel_cards.items():
+            context = card.render_context(self._responsive_mode, self._compact_height_mode)
+            self._apply_header_responsiveness(card, context)
+            self._apply_panel_body_responsiveness(panel_id, context)
+
+    def _apply_header_responsiveness(self, card: LivePanelCard, context: PanelRenderContext) -> None:
+        title_size = "11px"
+        if context.panel_mode == "compact":
+            title_size = "10px"
+        elif context.panel_mode == "mini":
+            title_size = "9px"
+        card.title_label.setStyleSheet(f"font-size: {title_size}; font-weight: 600;")
+        if card.collapsible:
+            card.collapse_button.setText("▾" if card.collapsed else "▴")
+
+    def _apply_panel_body_responsiveness(self, panel_id: str, context: PanelRenderContext) -> None:
+        if panel_id == "phase_timeline":
+            self.phase_plot.setMinimumHeight(80 if context.panel_mode == "mini" else 110 if context.panel_mode == "compact" else 150)
+        if panel_id in {"trajectory", "force_radius", "signature_layer", "groove_view", "pressure_fingerprint", "phase_timeline"}:
+            self._apply_plot_responsiveness(context)
+        if panel_id == "pin_keyboard_mirror":
+            self._apply_pin_panel_responsiveness(context)
+        elif panel_id == "pressure_fingerprint":
+            self._apply_pressure_panel_responsiveness(context)
+        elif panel_id == "groove_stability":
+            self._apply_groove_stability_panel_responsiveness(context)
+        elif panel_id == "human_likeness":
+            self._apply_human_likeness_panel_responsiveness(context)
+
+    def _apply_plot_responsiveness(self, context: PanelRenderContext) -> None:
+        hide_axes = context.panel_mode == "mini"
+        tick_alpha = 0.10 if context.panel_mode == "mini" else 0.14 if context.panel_mode == "compact" else 0.18
+        for plot in [self.trajectory_plot, self.force_plot, self.signature_plot, self.groove_plot, self.phase_plot, self.pressure_hist_plot]:
+            plot.showGrid(x=True, y=True, alpha=tick_alpha)
+            left_axis = plot.getPlotItem().getAxis("left")
+            bottom_axis = plot.getPlotItem().getAxis("bottom")
+            left_axis.setStyle(showValues=not hide_axes, tickTextWidth=24 if not hide_axes else 0)
+            bottom_axis.setStyle(showValues=not hide_axes, tickTextOffset=2 if not hide_axes else 0)
+
+    def _apply_pin_panel_responsiveness(self, context: PanelRenderContext) -> None:
+        tiny = context.panel_mode == "mini"
+        compact = context.panel_mode == "compact"
+        show_details = not tiny
+        self.pin_detail_label.setVisible(show_details)
+        self.pin_feedback_label.setVisible(show_details and not compact)
+        if tiny:
+            cell_w, cell_h = 24, 20
+            font_size = 10
+        elif compact:
+            cell_w, cell_h = 30, 24
+            font_size = 11
+        else:
+            cell_w, cell_h = 36, 32
+            font_size = 13
+        for cell in self.pin_cells.values():
+            cell.setMinimumSize(cell_w, cell_h)
+            cell.setMaximumHeight(cell_h + 2)
+            cell.setStyleSheet(
+                f"""
+                QLabel {{
+                    color: #f5f5f7;
+                    background: rgba(255, 255, 255, 0.08);
+                    border: 1px solid rgba(255, 255, 255, 0.10);
+                    border-radius: 7px;
+                    font-family: Menlo, Monaco, monospace;
+                    font-size: {font_size}px;
+                    font-weight: 600;
+                }}
+                """
+            )
+
+    def _apply_pressure_panel_responsiveness(self, context: PanelRenderContext) -> None:
+        if context.panel_mode == "mini":
+            self.pressure_summary_label.setVisible(True)
+            self.pressure_detail_label.setVisible(False)
+            self.pressure_hist_plot.setMinimumHeight(70)
+        elif context.panel_mode == "compact":
+            self.pressure_summary_label.setVisible(True)
+            self.pressure_detail_label.setVisible(False)
+            self.pressure_hist_plot.setMinimumHeight(95)
+        else:
+            self.pressure_summary_label.setVisible(True)
+            self.pressure_detail_label.setVisible(True)
+            self.pressure_hist_plot.setMinimumHeight(120)
+
+    def _apply_groove_stability_panel_responsiveness(self, context: PanelRenderContext) -> None:
+        if context.panel_mode == "mini":
+            self.groove_stability_detail_label.setVisible(False)
+            self.groove_stability_status_label.setVisible(False)
+            self.groove_stability_bar.setVisible(False)
+        elif context.panel_mode == "compact":
+            self.groove_stability_detail_label.setVisible(True)
+            self.groove_stability_status_label.setVisible(False)
+            self.groove_stability_bar.setVisible(True)
+        else:
+            self.groove_stability_detail_label.setVisible(True)
+            self.groove_stability_status_label.setVisible(True)
+            self.groove_stability_bar.setVisible(True)
+
+    def _apply_human_likeness_panel_responsiveness(self, context: PanelRenderContext) -> None:
+        if context.panel_mode == "mini":
+            self.human_likeness_meta_label.setVisible(True)
+            self.human_likeness_flags_label.setVisible(False)
+            self.human_likeness_disclaimer.setVisible(False)
+        elif context.panel_mode == "compact":
+            self.human_likeness_meta_label.setVisible(True)
+            self.human_likeness_flags_label.setVisible(False)
+            self.human_likeness_disclaimer.setVisible(False)
+        else:
+            self.human_likeness_meta_label.setVisible(True)
+            self.human_likeness_flags_label.setVisible(True)
+            self.human_likeness_disclaimer.setVisible(True)
 
     def refresh(self) -> None:
         snapshot = self.live_server.snapshot()

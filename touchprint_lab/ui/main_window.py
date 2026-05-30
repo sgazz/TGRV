@@ -5,7 +5,7 @@ import logging
 from typing import Any
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QActionGroup
 from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
+    QScrollArea,
     QSplitter,
     QTabWidget,
     QVBoxLayout,
@@ -63,6 +64,7 @@ class MainWindow(QMainWindow):
         self.current_session: TouchSessionRecord | None = None
 
         self.setWindowTitle("Touchprint Analyzer v1")
+        self.setMinimumSize(900, 650)
         self._build_ui()
         self._refresh_lists()
         self.ingestion_service.scan_now()
@@ -90,6 +92,10 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.stats_box, 1)
         left_layout.addWidget(QLabel("Current Session Metadata"))
         left_layout.addWidget(self.metadata_box, 2)
+        self.left_panel_scroll = QScrollArea()
+        self.left_panel_scroll.setWidgetResizable(True)
+        self.left_panel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.left_panel_scroll.setWidget(self.left_panel)
 
         self.plot_widget = TouchPlotWidget()
 
@@ -155,12 +161,13 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.analysis_tabs, 1)
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.splitter.addWidget(self.left_panel)
+        self.splitter.addWidget(self.left_panel_scroll)
         self.splitter.addWidget(self.plot_widget)
         self.splitter.addWidget(right_panel)
         self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 3)
         self.splitter.setStretchFactor(2, 2)
+        self.splitter.setChildrenCollapsible(False)
 
         container = QWidget()
         layout = QHBoxLayout(container)
@@ -172,6 +179,25 @@ class MainWindow(QMainWindow):
         self.compact_live_action.setCheckable(True)
         self.compact_live_action.toggled.connect(self._force_compact_live_mode)
         view_menu.addAction(self.compact_live_action)
+        view_menu.addSeparator()
+
+        self.layout_mode_group = QActionGroup(self)
+        self.layout_mode_group.setExclusive(True)
+        self.layout_mode_actions: dict[str, QAction] = {}
+        for mode, label in [
+            ("auto", "Layout Mode: Auto"),
+            ("large", "Layout Mode: Large"),
+            ("medium", "Layout Mode: Medium"),
+            ("small", "Layout Mode: Small"),
+        ]:
+            action = QAction(label, self)
+            action.setCheckable(True)
+            if mode == "auto":
+                action.setChecked(True)
+            action.triggered.connect(lambda checked=False, mode=mode: self.live_dashboard.set_layout_mode_override(mode))
+            self.layout_mode_group.addAction(action)
+            view_menu.addAction(action)
+            self.layout_mode_actions[mode] = action
 
         self._handle_tab_change(self.analysis_tabs.currentIndex())
 
@@ -250,7 +276,7 @@ class MainWindow(QMainWindow):
         self._apply_compact_live_mode(compact_live_mode)
 
     def _apply_compact_live_mode(self, enabled: bool) -> None:
-        self.left_panel.setVisible(not enabled)
+        self.left_panel_scroll.setVisible(not enabled)
         self.plot_widget.setVisible(not enabled)
         self.plot_widget.set_compact_mode(enabled)
         if enabled:
@@ -263,6 +289,14 @@ class MainWindow(QMainWindow):
             self.analysis_tabs.setCurrentIndex(self.live_tab_index)
         else:
             self._apply_compact_live_mode(False)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if self.compact_live_action.isChecked() or self.analysis_tabs.currentIndex() == self.live_tab_index:
+            return
+        width = max(self.width(), 1)
+        if width < 1100:
+            self.splitter.setSizes([max(width // 4, 1), max(width // 3, 1), max(width // 2, 1)])
 
     def _toggle_live_debug_panel(self) -> None:
         if self.analysis_tabs.currentIndex() != self.live_tab_index:
